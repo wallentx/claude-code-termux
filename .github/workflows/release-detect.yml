@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   compare-tags:
@@ -38,6 +39,26 @@ jobs:
               echo "::warning title=Termux release status::status=$status upstream=$latest local=$local_version tag=$local_tag"
               ;;
           esac
+      - name: Dispatch package release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_required="$(jq -r '.release_required' release-check.json)"
+          latest="$(jq -r '.latest' release-check.json)"
+          status="$(jq -r '.status' release-check.json)"
+
+          if [ "$release_required" != "true" ]; then
+            echo "::notice title=No release dispatch needed::status=$status"
+            exit 0
+          fi
+
+          gh workflow run package-release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF_NAME" \
+            --field "version=$latest"
+
+          echo "::notice title=Package release dispatched::version=$latest status=$status"
+          echo "- Dispatched package-release.yml for upstream $latest ($status)." >> "$GITHUB_STEP_SUMMARY"
       - name: Write summary
         if: always()
         run: |

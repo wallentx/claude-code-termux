@@ -10,17 +10,27 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: package-termux-${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
   package:
     name: Build Termux artifact
     runs-on: [self-hosted, termux, aarch64]
+    outputs:
+      actual_version: ${{ steps.package.outputs.actual_version }}
+      release_tag: ${{ steps.package.outputs.release_tag }}
+      archive: ${{ steps.package.outputs.archive }}
+      checksum_file: ${{ steps.package.outputs.checksum_file }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Package release
+        id: package
         run: scripts/package-release.sh "${{ inputs.version }}"
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -29,3 +39,47 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.sha256
+            dist/release.env
+
+  publish:
+    name: Publish GitHub release
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: claude-termux-release
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.package.outputs.release_tag }}
+          ACTUAL_VERSION: ${{ needs.package.outputs.actual_version }}
+          ARCHIVE: ${{ needs.package.outputs.archive }}
+          CHECKSUM_FILE: ${{ needs.package.outputs.checksum_file }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::notice title=Release already exists::$RELEASE_TAG"
+            exit 0
+          fi
+
+          notes="$RUNNER_TEMP/claude-termux-release-notes.md"
+          {
+            echo "Termux packaging for Claude Code $ACTUAL_VERSION."
+            echo
+            echo "This release contains the native Termux launcher and the patched upstream linux-arm64 payload."
+            echo
+            echo "Install with:"
+            echo
+            echo '```sh'
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/install.sh | bash"
+            echo '```'
+          } >"$notes"
+
+          gh release create "$RELEASE_TAG" \
+            "dist/$ARCHIVE" \
+            "dist/$CHECKSUM_FILE" \
+            --target "$GITHUB_SHA" \
+            --title "Claude Code $ACTUAL_VERSION for Termux" \
+            --notes-file "$notes"

@@ -30,6 +30,7 @@ Usage: scripts/package-release.sh [latest|VERSION]
 Runs build.sh, runs compatibility checks, and writes:
   dist/claude-termux-aarch64.tar.gz
   dist/claude-termux-aarch64.tar.gz.sha256
+  dist/release.env
 
 The upstream payload and generated launcher stay untracked.
 EOF
@@ -63,9 +64,28 @@ scripts/compat-test.sh --skip-build --network
 
 mkdir -p "$DIST_DIR"
 ARCHIVE="${DIST_DIR%/}/${PACKAGE_PREFIX}-aarch64.tar.gz"
+CHECKSUM_FILE="${ARCHIVE}.sha256"
+RELEASE_TAG="v${ACTUAL_VERSION}-termux"
+RELEASE_ENV="${DIST_DIR%/}/release.env"
 
 info "Writing $ARCHIVE"
 tar -czf "$ARCHIVE" "${PACKAGE_FILES[@]}"
-sha256sum "$ARCHIVE" >"${ARCHIVE}.sha256"
+sha256sum "$ARCHIVE" >"$CHECKSUM_FILE"
 
-ok "Packaged $ARCHIVE"
+cat >"$RELEASE_ENV" <<EOF
+actual_version=$ACTUAL_VERSION
+release_tag=$RELEASE_TAG
+archive=$(basename "$ARCHIVE")
+checksum_file=$(basename "$CHECKSUM_FILE")
+EOF
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  {
+    printf 'actual_version=%s\n' "$ACTUAL_VERSION"
+    printf 'release_tag=%s\n' "$RELEASE_TAG"
+    printf 'archive=%s\n' "$(basename "$ARCHIVE")"
+    printf 'checksum_file=%s\n' "$(basename "$CHECKSUM_FILE")"
+  } >>"$GITHUB_OUTPUT"
+fi
+
+ok "Packaged $ARCHIVE for $RELEASE_TAG"
