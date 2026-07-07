@@ -8,6 +8,7 @@
 /.agents/
 
 # Scratch/output files.
+/dist/
 *.bak
 *.tmp
 *.log
