@@ -14,3 +14,7 @@
 
 # Local planning/docs for this working copy.
 *.md
+!README.md
+
+# Local codegraph index.
+/.codegraph/
