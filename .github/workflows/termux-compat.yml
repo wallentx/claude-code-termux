@@ -1,0 +1,45 @@
+name: Termux compatibility
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_termux_smoke:
+        description: Run runtime smoke tests on a self-hosted Termux aarch64 runner
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    name: Portable checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install shell tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+      - name: Shell syntax
+        run: bash -n build.sh install.sh scripts/compat-test.sh scripts/release-check.sh scripts/package-release.sh
+      - name: ShellCheck
+        run: shellcheck build.sh install.sh scripts/compat-test.sh scripts/release-check.sh scripts/package-release.sh
+      - name: Upstream release metadata
+        run: scripts/release-check.sh --json
+
+  termux-smoke:
+    name: Termux runtime smoke
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_termux_smoke }}
+    runs-on: [self-hosted, termux, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Runtime compatibility checks
+        run: scripts/compat-test.sh --network --auth-probe

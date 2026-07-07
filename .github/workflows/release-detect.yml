@@ -1,0 +1,30 @@
+name: Detect upstream release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  compare-tags:
+    name: Compare upstream and Termux tags
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check upstream release tag
+        run: scripts/release-check.sh --fail-on-update
+      - name: Write summary
+        if: always()
+        run: |
+          {
+            echo "## Claude Termux release detection"
+            echo
+            echo '```json'
+            scripts/release-check.sh --json || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

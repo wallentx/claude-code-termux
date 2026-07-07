@@ -1,0 +1,31 @@
+name: Package Termux release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Upstream Claude Code version, or latest
+        required: true
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build Termux artifact
+    runs-on: [self-hosted, termux, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Package release
+        run: scripts/package-release.sh "${{ inputs.version }}"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-termux-release
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256

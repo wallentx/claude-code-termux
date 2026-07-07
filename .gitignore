@@ -1,0 +1,16 @@
+# Local upstream payload and generated launcher.
+/claude
+/claude.glibc
+
+# Local Claude/Codex state.
+/.claude/
+/.codex/
+/.agents/
+
+# Scratch/output files.
+*.bak
+*.tmp
+*.log
+
+# Local planning/docs for this working copy.
+*.md
