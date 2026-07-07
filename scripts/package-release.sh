@@ -60,7 +60,7 @@ ACTUAL_VERSION="$(./claude --version 2>/dev/null | sed -E 's/^([0-9]+\.[0-9]+\.[
 [[ -n "$ACTUAL_VERSION" ]] || die "Unable to parse built Claude version."
 
 info "Running compatibility checks"
-scripts/compat-test.sh --skip-build --network
+scripts/compat-test.sh --skip-build
 
 mkdir -p "$DIST_DIR"
 ARCHIVE="${DIST_DIR%/}/${PACKAGE_PREFIX}-aarch64.tar.gz"

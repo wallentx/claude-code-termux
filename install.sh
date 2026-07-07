@@ -7,6 +7,7 @@ ASSET="${CLAUDE_TERMUX_ASSET:-claude-termux-aarch64.tar.gz}"
 BASE_URL="${CLAUDE_TERMUX_BASE_URL:-https://github.com/$REPO/releases/latest/download}"
 URL="${CLAUDE_TERMUX_URL:-$BASE_URL/$ASSET}"
 CHECKSUM_URL="${CLAUDE_TERMUX_CHECKSUM_URL:-$URL.sha256}"
+DRY_RUN=0
 
 if [[ -t 1 ]]; then
   BOLD="\033[1m"
@@ -31,6 +32,9 @@ Downloads the latest Claude Termux release artifact from GitHub and installs:
   $PREFIX/bin/claude
   $PREFIX/bin/claude.glibc
 
+Options:
+  --dry-run                     Check local prerequisites without downloading
+
 Environment:
   CLAUDE_TERMUX_REPO          GitHub repo, default wallentx/claude-code-termux
   CLAUDE_TERMUX_URL           Override release tarball URL
@@ -39,11 +43,21 @@ Environment:
 EOF
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  show_help
-  exit 0
-fi
-[[ $# -eq 0 ]] || die "Unknown argument: $1"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      DRY_RUN=1
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      die "Unknown argument: $1"
+      ;;
+  esac
+  shift
+done
 
 if [[ -z "${TERMUX_VERSION:-}" || -z "${PREFIX:-}" ]]; then
   die "This installer is only for native Termux."
@@ -63,6 +77,12 @@ if [[ ! -r "${PREFIX}/etc/resolv.conf" ]]; then
 fi
 if [[ ! -r "/etc/resolv.conf" ]] && ! command -v proot >/dev/null 2>&1; then
   die "Missing /etc/resolv.conf and proot is not installed. Install proot for Claude auth DNS paths."
+fi
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  ok "Installer dry run passed"
+  info "Release URL: $URL"
+  exit 0
 fi
 
 TMP_ROOT="${TMPDIR:-$PREFIX/tmp}"
