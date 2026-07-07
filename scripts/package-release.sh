@@ -70,7 +70,10 @@ RELEASE_ENV="${DIST_DIR%/}/release.env"
 
 info "Writing $ARCHIVE"
 tar -czf "$ARCHIVE" "${PACKAGE_FILES[@]}"
-sha256sum "$ARCHIVE" >"$CHECKSUM_FILE"
+(
+  cd "$(dirname "$ARCHIVE")"
+  sha256sum "$(basename "$ARCHIVE")" >"$(basename "$CHECKSUM_FILE")"
+)
 
 cat >"$RELEASE_ENV" <<EOF
 actual_version=$ACTUAL_VERSION
