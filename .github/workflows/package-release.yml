@@ -17,13 +17,13 @@ jobs:
     name: Build Termux artifact
     runs-on: [self-hosted, termux, aarch64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Package release
         run: scripts/package-release.sh "${{ inputs.version }}"
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: claude-termux-release
           path: |
