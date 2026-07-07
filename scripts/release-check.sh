@@ -9,7 +9,7 @@ DOWNLOAD_PLATFORM="${CLAUDE_DOWNLOAD_PLATFORM:-linux-arm64}"
 UPSTREAM_GIT_URL="${CLAUDE_UPSTREAM_GIT_URL:-https://github.com/anthropics/claude-code.git}"
 UPSTREAM_TAG_GLOB="${CLAUDE_UPSTREAM_TAG_GLOB:-v*}"
 TERMUX_TAG_GLOB="${CLAUDE_TERMUX_TAG_GLOB:-v*-termux}"
-LOCAL_BINARY="./claude"
+LOCAL_BINARY=""
 REMOTE_ONLY=0
 JSON=0
 QUIET=0
@@ -46,12 +46,12 @@ show_help() {
 Usage: scripts/release-check.sh [options]
 
 Checks upstream Claude Code tags, verifies matching linux-arm64 payload metadata,
-and compares with the latest Termux release tag. If no local tag is available,
-it falls back to the local launcher version.
+and compares with the latest Termux release tag. If no Termux release tag exists,
+it reports that an initial release is required.
 
 Options:
   --remote-only       Do not run a local Claude binary
-  --binary PATH       Local Claude launcher to query with --version
+  --binary PATH       Optional local Claude launcher to query with --version
   --json              Print machine-readable JSON
   --quiet             Suppress human status lines
   --fail-on-update    Exit 2 when no Termux release exists or upstream is newer
@@ -63,7 +63,7 @@ Environment:
   CLAUDE_UPSTREAM_GIT_URL      Override upstream tag source
   CLAUDE_UPSTREAM_TAG_GLOB     Override upstream tag glob; default v*
   CLAUDE_TERMUX_TAG_GLOB       Override tracked release tag glob; default v*-termux
-  CLAUDE_TERMUX_LOCAL_VERSION  Override local version detection
+  CLAUDE_TERMUX_LOCAL_VERSION  Override Termux version detection
 EOF
 }
 
@@ -382,7 +382,7 @@ detect_local_release() {
     return
   fi
 
-  if [[ -x "$LOCAL_BINARY" ]]; then
+  if [[ -n "$LOCAL_BINARY" && -x "$LOCAL_BINARY" ]]; then
     output="$("$LOCAL_BINARY" --version 2>/dev/null)" || output=""
     if [[ "$output" =~ ([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?) ]]; then
       printf '%s|binary|\n' "$(normalize_version "${BASH_REMATCH[1]}")"
@@ -430,6 +430,14 @@ print_json() {
   else
     printf '"local_tag":null,'
   fi
+  case "$status" in
+    update_available|initial_release_required)
+      printf '"release_required":true,'
+      ;;
+    *)
+      printf '"release_required":false,'
+      ;;
+  esac
   printf '"status":"%s"' "$(json_escape "$status")"
   printf '}\n'
 }
@@ -490,7 +498,7 @@ if [[ "$REMOTE_ONLY" -eq 0 ]]; then
         ;;
     esac
   else
-    status="no_termux_release"
+    status="initial_release_required"
   fi
 fi
 
@@ -512,7 +520,7 @@ else
 fi
 
 if [[ "$FAIL_ON_UPDATE" -eq 1 &&
-  ( "$status" == "update_available" || "$status" == "no_termux_release" ) ]]; then
+  ( "$status" == "update_available" || "$status" == "initial_release_required" ) ]]; then
   exit 2
 fi
 

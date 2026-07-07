@@ -17,7 +17,27 @@ jobs:
         with:
           fetch-depth: 0
       - name: Check upstream release tag
-        run: scripts/release-check.sh --fail-on-update
+        run: scripts/release-check.sh --json | tee release-check.json
+      - name: Report release status
+        run: |
+          status="$(jq -r '.status' release-check.json)"
+          latest="$(jq -r '.latest' release-check.json)"
+          local_version="$(jq -r '.local_version // "none"' release-check.json)"
+          local_tag="$(jq -r '.local_tag // "none"' release-check.json)"
+          case "$status" in
+            up_to_date)
+              echo "::notice title=Termux release current::upstream=$latest tag=$local_tag"
+              ;;
+            initial_release_required)
+              echo "::warning title=Initial Termux release needed::upstream=$latest; no v*-termux release tag exists yet"
+              ;;
+            update_available)
+              echo "::warning title=Termux release needed::upstream=$latest local=$local_version tag=$local_tag"
+              ;;
+            *)
+              echo "::warning title=Termux release status::status=$status upstream=$latest local=$local_version tag=$local_tag"
+              ;;
+          esac
       - name: Write summary
         if: always()
         run: |
@@ -25,6 +45,10 @@ jobs:
             echo "## Claude Termux release detection"
             echo
             echo '```json'
-            scripts/release-check.sh --json || true
+            if [ -f release-check.json ]; then
+              cat release-check.json
+            else
+              scripts/release-check.sh --json || true
+            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
