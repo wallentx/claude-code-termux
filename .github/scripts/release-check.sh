@@ -2,7 +2,7 @@
 # Check upstream Claude Code release tags and binary metadata without downloading the payload.
 set -Eeuo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 DOWNLOAD_BASE_URL="${CLAUDE_DOWNLOAD_BASE_URL:-https://downloads.claude.ai/claude-code-releases}"
 DOWNLOAD_PLATFORM="${CLAUDE_DOWNLOAD_PLATFORM:-linux-arm64}"
@@ -43,7 +43,7 @@ die() {
 
 show_help() {
   cat <<'EOF'
-Usage: scripts/release-check.sh [options]
+Usage: .github/scripts/release-check.sh [options]
 
 Checks upstream Claude Code tags, verifies matching linux-arm64 payload metadata,
 and compares with the latest Termux release tag. If no Termux release tag exists,

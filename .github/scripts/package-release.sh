@@ -2,7 +2,7 @@
 # Build a source-free release artifact from the upstream binary payload.
 set -Eeuo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 VERSION="${1:-latest}"
 DIST_DIR="${DIST_DIR:-dist}"
@@ -25,7 +25,7 @@ die() { printf '%b\n' " ${RED}[ERR]${RESET} $*" >&2; exit 1; }
 
 show_help() {
   cat <<'EOF'
-Usage: scripts/package-release.sh [latest|VERSION]
+Usage: .github/scripts/package-release.sh [latest|VERSION]
 
 Runs build.sh, runs compatibility checks, and writes:
   dist/claude-termux-aarch64.tar.gz
@@ -60,7 +60,7 @@ ACTUAL_VERSION="$(./claude --version 2>/dev/null | sed -E 's/^([0-9]+\.[0-9]+\.[
 [[ -n "$ACTUAL_VERSION" ]] || die "Unable to parse built Claude version."
 
 info "Running compatibility checks"
-scripts/compat-test.sh --skip-build
+.github/scripts/compat-test.sh --skip-build
 
 mkdir -p "$DIST_DIR"
 ARCHIVE="${DIST_DIR%/}/${PACKAGE_PREFIX}-aarch64.tar.gz"

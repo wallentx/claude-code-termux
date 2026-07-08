@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Check upstream release tag
-        run: scripts/release-check.sh --json | tee release-check.json
+        run: .github/scripts/release-check.sh --json | tee release-check.json
       - name: Report release status
         run: |
           status="$(jq -r '.status' release-check.json)"
@@ -69,7 +69,7 @@ jobs:
             if [ -f release-check.json ]; then
               cat release-check.json
             else
-              scripts/release-check.sh --json || true
+              .github/scripts/release-check.sh --json || true
             fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

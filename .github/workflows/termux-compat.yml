@@ -1,22 +1,38 @@
 name: Termux compatibility
 
 on:
-  push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      run_termux_smoke:
-        description: Run runtime smoke tests on a self-hosted Termux aarch64 runner
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect artifact changes
+    runs-on: ubuntu-latest
+    outputs:
+      termux_compat: ${{ steps.changed.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Decide whether to run
+        id: changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: .github/scripts/ci-should-run.py termux-compat
+      - name: Skip reason
+        if: steps.changed.outputs.should_run != 'true'
+        env:
+          SKIP_REASON: ${{ steps.changed.outputs.reason }}
+        run: echo "$SKIP_REASON"
+
   portable:
     name: Portable checks
+    needs: changes
+    if: ${{ needs.changes.outputs.termux_compat == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -27,19 +43,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
       - name: Shell syntax
-        run: bash -n build.sh install.sh scripts/compat-test.sh scripts/release-check.sh scripts/package-release.sh
+        run: bash -n build.sh install.sh .github/scripts/compat-test.sh .github/scripts/release-check.sh .github/scripts/package-release.sh
       - name: ShellCheck
-        run: shellcheck build.sh install.sh scripts/compat-test.sh scripts/release-check.sh scripts/package-release.sh
+        run: shellcheck build.sh install.sh .github/scripts/compat-test.sh .github/scripts/release-check.sh .github/scripts/package-release.sh
       - name: Upstream release metadata
-        run: scripts/release-check.sh --json
+        run: .github/scripts/release-check.sh --json
 
   termux-smoke:
     name: Termux runtime smoke
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_termux_smoke }}
+    needs: changes
+    if: ${{ needs.changes.outputs.termux_compat == 'true' }}
     runs-on: [self-hosted, termux, aarch64]
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Runtime compatibility checks
-        run: scripts/compat-test.sh --network --auth-probe
+        run: .github/scripts/compat-test.sh --network --auth-probe

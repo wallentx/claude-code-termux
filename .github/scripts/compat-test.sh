@@ -2,7 +2,7 @@
 # Run binary-only Termux compatibility checks for the Claude launcher.
 set -Eeuo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 NETWORK=0
 AUTH_PROBE=0
@@ -31,7 +31,7 @@ die() { printf '%b\n' " ${RED}[ERR]${RESET} $*" >&2; exit 1; }
 
 show_help() {
   cat <<'EOF'
-Usage: scripts/compat-test.sh [options]
+Usage: .github/scripts/compat-test.sh [options]
 
 Runs the local binary-only compatibility test workflow. Static checks run on
 any host. Runtime launcher smokes run only on native Termux aarch64.
@@ -126,7 +126,7 @@ check_interpreter() {
   }
 
   interp="$(readelf -l "$PAYLOAD" 2>/dev/null |
-    awk -F': ' '/Requesting program interpreter/ { gsub(/]$/, "", $2); print $2; exit }')"
+    awk -F': ' '/Requesting program interpreter/ { gsub(/]$/, "", $2); print $2 }')"
   [[ "$interp" == "/lib/ld-linux-aarch64.so.1" ]] || {
     printf 'unexpected interpreter: %s\n' "${interp:-missing}" >&2
     return 1
@@ -220,15 +220,15 @@ auth_probe() {
 }
 
 info "Running portable shell checks"
-run_check "Bash syntax" bash -n build.sh install.sh scripts/compat-test.sh scripts/release-check.sh scripts/package-release.sh
+run_check "Bash syntax" bash -n build.sh install.sh .github/scripts/compat-test.sh .github/scripts/release-check.sh .github/scripts/package-release.sh
 
 if [[ "$SKIP_SHELLCHECK" -eq 0 && -x "$(command -v shellcheck || true)" ]]; then
-  run_check "ShellCheck" shellcheck build.sh install.sh scripts/compat-test.sh scripts/release-check.sh scripts/package-release.sh
+  run_check "ShellCheck" shellcheck build.sh install.sh .github/scripts/compat-test.sh .github/scripts/release-check.sh .github/scripts/package-release.sh
 else
   warn "ShellCheck not installed or skipped"
 fi
 
-run_check "Release metadata probe" scripts/release-check.sh --quiet
+run_check "Release metadata probe" .github/scripts/release-check.sh --quiet
 
 if ! is_termux_runtime; then
   warn "Not native Termux aarch64; skipping launcher runtime smokes"
@@ -252,7 +252,7 @@ silent_check "Auth login help" "$LAUNCHER" auth login --help
 run_check "Guard update command" check_guarded_command update
 run_check "Guard upgrade command" check_guarded_command upgrade
 run_check "Guard install command" check_guarded_command install
-run_check "Local release comparison" scripts/release-check.sh --quiet
+run_check "Local release comparison" .github/scripts/release-check.sh --quiet
 
 if [[ "$NETWORK" -eq 1 ]]; then
   run_check "IPv4 API reachability" curl_head_ipv4 https://api.anthropic.com/

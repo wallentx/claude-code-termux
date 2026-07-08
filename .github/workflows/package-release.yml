@@ -10,7 +10,9 @@ on:
         type: string
 
 permissions:
+  attestations: write
   contents: write
+  id-token: write
 
 concurrency:
   group: package-termux-${{ inputs.version }}
@@ -31,7 +33,7 @@ jobs:
           fetch-depth: 0
       - name: Package release
         id: package
-        run: scripts/package-release.sh "${{ inputs.version }}"
+        run: .github/scripts/package-release.sh "${{ inputs.version }}"
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -51,6 +53,14 @@ jobs:
         with:
           name: claude-termux-release
           path: dist
+      - name: Attest release archive
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/${{ needs.package.outputs.archive }}
+      - name: Attest release checksum
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/${{ needs.package.outputs.checksum_file }}
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

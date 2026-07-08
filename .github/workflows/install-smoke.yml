@@ -1,0 +1,86 @@
+name: Termux installer smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect installer changes
+    runs-on: ubuntu-latest
+    outputs:
+      install_smoke: ${{ steps.changed.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Decide whether to run
+        id: changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: .github/scripts/ci-should-run.py install-smoke
+      - name: Skip reason
+        if: steps.changed.outputs.should_run != 'true'
+        env:
+          SKIP_REASON: ${{ steps.changed.outputs.reason }}
+        run: echo "$SKIP_REASON"
+
+  install-smoke:
+    name: Install fixture artifact in Termux
+    needs: changes
+    if: ${{ needs.changes.outputs.install_smoke == 'true' }}
+    uses: wallentx/gh-actions/.github/workflows/termux-run.yml@main
+    with:
+      packages: |
+        ca-certificates
+        coreutils
+        curl
+        glibc
+        glibc-runner
+        tar
+      commands: |
+        set -Eeuo pipefail
+
+        export TERMUX_VERSION="${TERMUX_VERSION:-ci}"
+
+        fixture="$PREFIX/tmp/claude-installer-fixture"
+        payload="$fixture/payload"
+        archive="$fixture/claude-termux-aarch64.tar.gz"
+        rm -rf "$fixture"
+        mkdir -p "$payload"
+
+        cat >"$payload/claude" <<'FIXTURE'
+        #!/usr/bin/env sh
+        case "${1:-}" in
+          --version)
+            echo "2.1.202 (Claude Code fixture)"
+            ;;
+          --help)
+            echo "claude fixture help"
+            ;;
+          *)
+            echo "claude fixture"
+            ;;
+        esac
+        FIXTURE
+        chmod 0755 "$payload/claude"
+        printf 'fixture payload\n' >"$payload/claude.glibc"
+
+        tar -czf "$archive" -C "$payload" claude claude.glibc
+        (
+          cd "$(dirname "$archive")"
+          sha256sum "$(basename "$archive")" >"$(basename "$archive").sha256"
+        )
+
+        CLAUDE_TERMUX_URL="file://$archive" \
+        CLAUDE_TERMUX_CHECKSUM_URL="file://$archive.sha256" \
+          bash ./install.sh
+
+        test -x "$PREFIX/bin/claude"
+        test -x "$PREFIX/bin/claude.glibc"
+        "$PREFIX/bin/claude" --version | grep -qx "2.1.202 (Claude Code fixture)"
+        "$PREFIX/bin/claude" --help | grep -q "claude fixture help"

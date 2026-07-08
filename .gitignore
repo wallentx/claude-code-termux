@@ -9,6 +9,7 @@
 
 # Scratch/output files.
 /dist/
+__pycache__/
 *.bak
 *.tmp
 *.log

@@ -18,6 +18,16 @@ info() { printf '%b\n' " ${CYAN}[..]${RESET} ${DIM}$*${RESET}"; }
 ok() { printf '%b\n' " ${GREEN}[OK]${RESET} $*"; }
 die() { printf '%b\n' " ${RED}[ERR]${RESET} $*" >&2; exit 1; }
 
+on_error() {
+  local status=$?
+  local line=${BASH_LINENO[0]:-unknown}
+  local command=${BASH_COMMAND:-unknown}
+
+  printf '%b\n' " ${RED}[ERR]${RESET} build failed at line ${line}: ${command}" >&2
+  exit "$status"
+}
+trap on_error ERR
+
 DOWNLOAD_BASE_URL="${CLAUDE_DOWNLOAD_BASE_URL:-https://downloads.claude.ai/claude-code-releases}"
 DOWNLOAD_PLATFORM="linux-arm64"
 DOWNLOAD_TARGET="latest"
@@ -128,18 +138,26 @@ download_upstream_payload() {
 
   info "Downloading upstream $DOWNLOAD_PLATFORM payload"
   download_file "$DOWNLOAD_BASE_URL/$version/$DOWNLOAD_PLATFORM/claude" "$tmp_bin"
+  ok "Download complete"
 
+  info "Verifying upstream checksum"
   actual="$(sha256sum "$tmp_bin" | awk '{print $1}')"
   [[ "$actual" == "$checksum" ]] || die "Checksum verification failed."
+  ok "Checksum verified"
 
   if command -v readelf >/dev/null 2>&1; then
-    interp="$(readelf -l "$tmp_bin" 2>/dev/null |
-      awk -F': ' '/Requesting program interpreter/ { gsub(/]$/, "", $2); print $2; exit }')"
+    info "Inspecting upstream ELF interpreter"
+    if ! interp="$(readelf -l "$tmp_bin" 2>/dev/null |
+      awk -F': ' '/Requesting program interpreter/ { gsub(/]$/, "", $2); print $2 }')"; then
+      die "readelf failed for downloaded binary."
+    fi
     [[ "$interp" == "/lib/ld-linux-aarch64.so.1" ]] ||
       die "Downloaded binary has unexpected interpreter: ${interp:-unknown}"
+    ok "Upstream ELF interpreter verified"
   fi
 
   chmod 0755 "$tmp_bin"
+  info "Installing payload as ./claude.glibc"
   mv -f "$tmp_bin" "claude.glibc"
   tmp_bin=""
   trap - EXIT
@@ -159,7 +177,7 @@ is_upstream_payload() {
   fi
 
   interp="$(readelf -l "$candidate" 2>/dev/null |
-    awk -F': ' '/Requesting program interpreter/ { gsub(/]$/, "", $2); print $2; exit }')"
+    awk -F': ' '/Requesting program interpreter/ { gsub(/]$/, "", $2); print $2 }')"
   [[ "$interp" == "/lib/ld-linux-aarch64.so.1" ]]
 }
 
@@ -210,9 +228,9 @@ fi
 [[ -s "claude.glibc" ]] || die "claude.glibc is empty."
 chmod 0755 "claude.glibc"
 
-if [[ -x "scripts/patch-payload.sh" ]]; then
+if [[ -x ".github/scripts/patch-payload.sh" ]]; then
   info "Running payload patch hook"
-  scripts/patch-payload.sh "claude.glibc"
+  .github/scripts/patch-payload.sh "claude.glibc"
 fi
 
 GLIBC_LOADER="${PREFIX}/glibc/lib/ld-linux-aarch64.so.1"
@@ -220,7 +238,7 @@ CA_BUNDLE="${PREFIX}/etc/tls/cert.pem"
 [[ -x "$GLIBC_LOADER" ]] || die "Missing Termux glibc loader: $GLIBC_LOADER. Install glibc-repo and glibc."
 [[ -r "$CA_BUNDLE" ]] || die "Missing Termux CA bundle: $CA_BUNDLE. Install ca-certificates."
 if [[ ! -r "${PREFIX}/etc/resolv.conf" ]]; then
-  info "Resolver config missing: ${PREFIX}/etc/resolv.conf. DNS may fail until resolv-conf is installed."
+  info "Resolver config missing: ${PREFIX}/etc/resolv.conf. Launcher DNS proxy fallback will be used at runtime."
 fi
 
 CC_BIN="${CC:-}"

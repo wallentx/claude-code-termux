@@ -73,12 +73,8 @@ CA_BUNDLE="${PREFIX}/etc/tls/cert.pem"
 [[ -x "$GLIBC_LOADER" ]] || die "Missing Termux glibc loader: $GLIBC_LOADER. Install glibc-repo and glibc."
 [[ -r "$CA_BUNDLE" ]] || die "Missing Termux CA bundle: $CA_BUNDLE. Install ca-certificates."
 if [[ ! -r "${PREFIX}/etc/resolv.conf" ]]; then
-  die "Missing resolver config: ${PREFIX}/etc/resolv.conf. Install resolv-conf."
+  info "Resolver config missing: ${PREFIX}/etc/resolv.conf. The launcher will use its local DNS proxy fallback."
 fi
-if [[ ! -r "/etc/resolv.conf" ]] && ! command -v proot >/dev/null 2>&1; then
-  die "Missing /etc/resolv.conf and proot is not installed. Install proot for Claude auth DNS paths."
-fi
-
 if [[ "$DRY_RUN" -eq 1 ]]; then
   ok "Installer dry run passed"
   info "Release URL: $URL"

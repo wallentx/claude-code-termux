@@ -1,13 +1,24 @@
 #include <errno.h>
+#include <arpa/inet.h>
 #include <libgen.h>
 #include <limits.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define DEFAULT_TERMUX_PREFIX "/data/data/com.termux/files/usr"
 #define CLAUDE_PAYLOAD_NAME "claude.glibc"
+#define DNS_PROXY_HEADER_MAX 8192
+#define DNS_PROXY_BUFFER_SIZE 16384
 
 static int path_join(char *buf, size_t len, const char *a, const char *b) {
     int written = snprintf(buf, len, "%s/%s", a, b);
@@ -94,6 +105,381 @@ static int env_is_truthy(const char *name) {
            strcmp(value, "yes") == 0 || strcmp(value, "on") == 0;
 }
 
+static int env_has_value(const char *name) {
+    const char *value = getenv(name);
+    return value != NULL && value[0] != '\0';
+}
+
+static const char *first_proxy_value(void) {
+    const char *names[] = {"CLAUDE_TERMUX_PROXY", "HTTPS_PROXY", "https_proxy",
+                           "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"};
+
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        const char *value = getenv(names[i]);
+        if (value != NULL && value[0] != '\0') {
+            return value;
+        }
+    }
+
+    return NULL;
+}
+
+static void set_proxy_environment(const char *proxy) {
+    setenv("HTTPS_PROXY", proxy, 0);
+    setenv("https_proxy", proxy, 0);
+    setenv("HTTP_PROXY", proxy, 0);
+    setenv("http_proxy", proxy, 0);
+
+    if (!env_has_value("CLAUDE_CODE_PROXY_RESOLVES_HOSTS")) {
+        setenv("CLAUDE_CODE_PROXY_RESOLVES_HOSTS", "true", 0);
+    }
+}
+
+static int copy_span(char *dest, size_t dest_len, const char *start, size_t len) {
+    if (len == 0 || len >= dest_len) {
+        return 0;
+    }
+
+    memcpy(dest, start, len);
+    dest[len] = '\0';
+    return 1;
+}
+
+static int send_all(int fd, const void *data, size_t len) {
+    const char *ptr = data;
+
+    while (len > 0) {
+        ssize_t sent = send(fd, ptr, len, 0);
+        if (sent < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return 0;
+        }
+        if (sent == 0) {
+            return 0;
+        }
+        ptr += sent;
+        len -= (size_t)sent;
+    }
+
+    return 1;
+}
+
+static char *find_header_end(char *buf, size_t len) {
+    if (len < 4) {
+        return NULL;
+    }
+
+    for (size_t i = 3; i < len; i++) {
+        if (buf[i - 3] == '\r' && buf[i - 2] == '\n' && buf[i - 1] == '\r' &&
+            buf[i] == '\n') {
+            return &buf[i - 3];
+        }
+    }
+
+    return NULL;
+}
+
+static void send_proxy_status(int fd, int code, const char *reason) {
+    char response[128];
+    int written = snprintf(response, sizeof(response),
+                           "HTTP/1.1 %d %s\r\nConnection: close\r\n\r\n", code, reason);
+
+    if (written > 0 && (size_t)written < sizeof(response)) {
+        (void)send_all(fd, response, (size_t)written);
+    }
+}
+
+static int parse_connect_target(const char *line, char *host, size_t host_len, char *port,
+                                size_t port_len) {
+    const char *target = NULL;
+    const char *target_end = NULL;
+    const char *port_start = NULL;
+    const char *colon = NULL;
+
+    if (strncmp(line, "CONNECT ", 8) != 0) {
+        return 0;
+    }
+
+    target = line + 8;
+    target_end = strchr(target, ' ');
+    if (target_end == NULL || target_end == target) {
+        return 0;
+    }
+
+    if (*target == '[') {
+        const char *close = strchr(target, ']');
+        if (close == NULL || close >= target_end || close + 1 >= target_end ||
+            close[1] != ':') {
+            return 0;
+        }
+        port_start = close + 2;
+        return copy_span(host, host_len, target + 1, (size_t)(close - target - 1)) &&
+               copy_span(port, port_len, port_start, (size_t)(target_end - port_start));
+    }
+
+    for (const char *ptr = target; ptr < target_end; ptr++) {
+        if (*ptr == ':') {
+            colon = ptr;
+        }
+    }
+    if (colon == NULL || colon == target || colon + 1 >= target_end) {
+        return 0;
+    }
+
+    port_start = colon + 1;
+    return copy_span(host, host_len, target, (size_t)(colon - target)) &&
+           copy_span(port, port_len, port_start, (size_t)(target_end - port_start));
+}
+
+static int connect_upstream(const char *host, const char *port) {
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    struct addrinfo *addr = NULL;
+    int upstream_fd = -1;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = env_is_truthy("CLAUDE_TERMUX_ALLOW_IPV6") ? AF_UNSPEC : AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(host, port, &hints, &result) != 0) {
+        return -1;
+    }
+
+    for (addr = result; addr != NULL; addr = addr->ai_next) {
+        upstream_fd = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
+        if (upstream_fd < 0) {
+            continue;
+        }
+        if (connect(upstream_fd, addr->ai_addr, addr->ai_addrlen) == 0) {
+            break;
+        }
+        close(upstream_fd);
+        upstream_fd = -1;
+    }
+
+    freeaddrinfo(result);
+    return upstream_fd;
+}
+
+static void relay_streams(int client_fd, int upstream_fd) {
+    char buffer[DNS_PROXY_BUFFER_SIZE];
+    int client_open = 1;
+    int upstream_open = 1;
+    int max_fd = client_fd > upstream_fd ? client_fd : upstream_fd;
+
+    while (client_open || upstream_open) {
+        fd_set reads;
+        int ready = 0;
+
+        FD_ZERO(&reads);
+        if (client_open) {
+            FD_SET(client_fd, &reads);
+        }
+        if (upstream_open) {
+            FD_SET(upstream_fd, &reads);
+        }
+
+        ready = select(max_fd + 1, &reads, NULL, NULL, NULL);
+        if (ready < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+
+        if (client_open && FD_ISSET(client_fd, &reads)) {
+            ssize_t received = recv(client_fd, buffer, sizeof(buffer), 0);
+            if (received <= 0) {
+                client_open = 0;
+                shutdown(upstream_fd, SHUT_WR);
+            } else if (!send_all(upstream_fd, buffer, (size_t)received)) {
+                break;
+            }
+        }
+
+        if (upstream_open && FD_ISSET(upstream_fd, &reads)) {
+            ssize_t received = recv(upstream_fd, buffer, sizeof(buffer), 0);
+            if (received <= 0) {
+                upstream_open = 0;
+                shutdown(client_fd, SHUT_WR);
+            } else if (!send_all(client_fd, buffer, (size_t)received)) {
+                break;
+            }
+        }
+    }
+}
+
+static void handle_proxy_client(int client_fd) {
+    char request[DNS_PROXY_HEADER_MAX + 1];
+    char host[NI_MAXHOST];
+    char port[NI_MAXSERV];
+    size_t used = 0;
+    size_t header_len = 0;
+    char *header_end = NULL;
+    char *line_end = NULL;
+    int upstream_fd = -1;
+
+    while (used < DNS_PROXY_HEADER_MAX && header_end == NULL) {
+        ssize_t received = recv(client_fd, request + used, DNS_PROXY_HEADER_MAX - used, 0);
+        if (received <= 0) {
+            return;
+        }
+        used += (size_t)received;
+        request[used] = '\0';
+        header_end = find_header_end(request, used);
+    }
+
+    if (header_end == NULL) {
+        send_proxy_status(client_fd, 400, "Bad Request");
+        return;
+    }
+    header_len = (size_t)(header_end - request) + 4;
+
+    line_end = strstr(request, "\r\n");
+    if (line_end == NULL) {
+        send_proxy_status(client_fd, 400, "Bad Request");
+        return;
+    }
+    *line_end = '\0';
+
+    if (!parse_connect_target(request, host, sizeof(host), port, sizeof(port))) {
+        send_proxy_status(client_fd, 405, "Method Not Allowed");
+        return;
+    }
+
+    upstream_fd = connect_upstream(host, port);
+    if (upstream_fd < 0) {
+        send_proxy_status(client_fd, 502, "Bad Gateway");
+        return;
+    }
+
+    if (!send_all(client_fd, "HTTP/1.1 200 Connection Established\r\n\r\n", 39)) {
+        close(upstream_fd);
+        return;
+    }
+
+    if (used > header_len &&
+        !send_all(upstream_fd, request + header_len, used - header_len)) {
+        close(upstream_fd);
+        return;
+    }
+
+    relay_streams(client_fd, upstream_fd);
+    close(upstream_fd);
+}
+
+static void reap_proxy_workers(void) {
+    while (waitpid(-1, NULL, WNOHANG) > 0) {
+    }
+}
+
+static void run_dns_proxy(int listener_fd) {
+    signal(SIGPIPE, SIG_IGN);
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    if (getppid() == 1) {
+        _exit(0);
+    }
+
+    for (;;) {
+        int client_fd = accept(listener_fd, NULL, NULL);
+        pid_t worker = 0;
+
+        if (client_fd < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+
+        worker = fork();
+        if (worker == 0) {
+            signal(SIGPIPE, SIG_IGN);
+            prctl(PR_SET_PDEATHSIG, SIGTERM);
+            close(listener_fd);
+            handle_proxy_client(client_fd);
+            close(client_fd);
+            _exit(0);
+        }
+        if (worker < 0) {
+            handle_proxy_client(client_fd);
+        }
+
+        close(client_fd);
+        reap_proxy_workers();
+    }
+
+    close(listener_fd);
+    _exit(0);
+}
+
+static int start_dns_proxy(char *proxy_url, size_t proxy_url_len) {
+    int listener_fd = -1;
+    int yes = 1;
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    pid_t proxy_pid = 0;
+    int written = 0;
+
+    listener_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener_fd < 0) {
+        return 0;
+    }
+
+    (void)setsockopt(listener_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+
+    if (bind(listener_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        listen(listener_fd, 16) != 0 ||
+        getsockname(listener_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+        close(listener_fd);
+        return 0;
+    }
+
+    proxy_pid = fork();
+    if (proxy_pid < 0) {
+        close(listener_fd);
+        return 0;
+    }
+
+    if (proxy_pid == 0) {
+        run_dns_proxy(listener_fd);
+    }
+
+    close(listener_fd);
+    written = snprintf(proxy_url, proxy_url_len, "http://127.0.0.1:%u",
+                       (unsigned int)ntohs(addr.sin_port));
+    return written > 0 && (size_t)written < proxy_url_len;
+}
+
+static void configure_proxy_environment(void) {
+    const char *proxy = first_proxy_value();
+    char local_proxy[64];
+
+    if (proxy != NULL) {
+        set_proxy_environment(proxy);
+        return;
+    }
+
+    if (env_is_truthy("CLAUDE_TERMUX_NO_DNS_PROXY") ||
+        env_is_truthy("CLAUDE_TERMUX_DISABLE_DNS_PROXY")) {
+        return;
+    }
+
+    if (start_dns_proxy(local_proxy, sizeof(local_proxy))) {
+        set_proxy_environment(local_proxy);
+    } else {
+        fprintf(stderr,
+                "[claude-termux] Warning: could not start local DNS proxy; network auth "
+                "may still use upstream resolver paths.\n");
+    }
+}
+
 static void append_res_options(const char *option) {
     const char *existing = getenv("RES_OPTIONS");
     char *combined = NULL;
@@ -155,6 +541,10 @@ static void append_env_option(const char *name, const char *option) {
 static void warn_missing_resolver(const char *prefix) {
     char resolver_path[PATH_MAX];
 
+    if (first_proxy_value() != NULL) {
+        return;
+    }
+
     if (!path_join(resolver_path, sizeof(resolver_path), prefix, "etc/resolv.conf")) {
         return;
     }
@@ -165,47 +555,6 @@ static void warn_missing_resolver(const char *prefix) {
                 "[claude-termux] DNS may fail. Install it with: pkg install resolv-conf\n",
                 resolver_path);
     }
-}
-
-static int should_bind_resolver_with_proot(const char *prefix, char *proot_path, size_t proot_len,
-                                           char *resolv_bind, size_t resolv_bind_len) {
-    char termux_resolver[PATH_MAX];
-    int written = 0;
-
-    if (env_is_truthy("CLAUDE_TERMUX_NO_PROOT_RESOLV")) {
-        return 0;
-    }
-
-    if (access("/etc/resolv.conf", R_OK) == 0) {
-        return 0;
-    }
-
-    if (!path_join(termux_resolver, sizeof(termux_resolver), prefix, "etc/resolv.conf")) {
-        return 0;
-    }
-    if (access(termux_resolver, R_OK) != 0) {
-        return 0;
-    }
-
-    if (!path_join(proot_path, proot_len, prefix, "bin/proot")) {
-        return 0;
-    }
-    if (access(proot_path, X_OK) != 0) {
-        fprintf(stderr,
-                "[claude-termux] Warning: /etc/resolv.conf is missing and proot was not "
-                "found.\n"
-                "[claude-termux] Auth may fail in c-ares DNS paths. Install it with: pkg "
-                "install proot\n");
-        return 0;
-    }
-
-    written =
-        snprintf(resolv_bind, resolv_bind_len, "%s:/etc/resolv.conf", termux_resolver);
-    if (written < 0 || (size_t)written >= resolv_bind_len) {
-        return 0;
-    }
-
-    return 1;
 }
 
 static int configure_environment(const char *prefix) {
@@ -225,6 +574,7 @@ static int configure_environment(const char *prefix) {
         return 0;
     }
     setenv("SSL_CERT_FILE", cert_path, 1);
+    configure_proxy_environment();
 
     if (!env_is_truthy("CLAUDE_TERMUX_ALLOW_IPV6")) {
         append_res_options("no-aaaa");
@@ -266,15 +616,11 @@ int main(int argc, char **argv) {
     char loader_path[PATH_MAX];
     char lib_path[PATH_MAX];
     char payload_path[PATH_MAX];
-    char proot_path[PATH_MAX];
-    char resolv_bind[PATH_MAX + 32];
     const char *prefix = NULL;
     const char *install_dir = NULL;
-    const char *exec_target = NULL;
     char **new_argv = NULL;
     ssize_t read_len;
     int arg_idx = 0;
-    int use_proot = 0;
 
     prefix = resolve_prefix(prefix_fallback, sizeof(prefix_fallback));
     if (!is_native_termux(prefix)) {
@@ -324,23 +670,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    use_proot =
-        should_bind_resolver_with_proot(prefix, proot_path, sizeof(proot_path), resolv_bind,
-                                        sizeof(resolv_bind));
-
-    new_argv = calloc((size_t)argc + (use_proot ? 7 : 4), sizeof(*new_argv));
+    new_argv = calloc((size_t)argc + 4, sizeof(*new_argv));
     if (new_argv == NULL) {
         perror("[claude-termux] calloc failed");
         return 1;
     }
 
-    exec_target = loader_path;
-    if (use_proot) {
-        exec_target = proot_path;
-        new_argv[arg_idx++] = proot_path;
-        new_argv[arg_idx++] = "-b";
-        new_argv[arg_idx++] = resolv_bind;
-    }
     new_argv[arg_idx++] = loader_path;
     new_argv[arg_idx++] = "--library-path";
     new_argv[arg_idx++] = lib_path;
@@ -350,7 +685,7 @@ int main(int argc, char **argv) {
     }
     new_argv[arg_idx] = NULL;
 
-    execv(exec_target, new_argv);
+    execv(loader_path, new_argv);
     perror("[claude-termux] execv failed");
     free(new_argv);
     return 1;

@@ -31,8 +31,6 @@ Requirements:
 - `aarch64`
 - `glibc-repo` and `glibc`
 - `ca-certificates`
-- `resolv-conf`
-- `proot`
 
 For non-Termux platforms, use the official Claude Code installer:
 
@@ -42,9 +40,49 @@ curl -fsSL https://claude.ai/install.sh | bash
 
 ## Release Tracking
 
-CI checks upstream Claude Code tags from `anthropics/claude-code` and compares them with this fork's `vX.Y.Z-termux` release tags. When upstream has a newer tag, the scheduled workflow fails as a release signal.
+CI checks upstream Claude Code tags from `anthropics/claude-code` and compares them with this fork's `vX.Y.Z-termux` release tags. When upstream has a newer tag, or when this fork has no release yet, the scheduled detector dispatches the packaging workflow for the exact upstream version it found.
 
-Release artifacts are built on native Termux runners. The build downloads the official upstream payload, runs an optional payload patch hook if present, builds the native launcher, and uploads an artifact. Upstream and patched binaries stay out of git.
+Release artifacts are built on native Termux runners. The build downloads the official upstream payload, verifies upstream metadata, runs an optional payload patch hook if present, builds the native launcher, tests the artifact locally, attests the release assets, and publishes a GitHub release. Upstream and patched binaries stay out of git.
+
+```mermaid
+graph TD
+    A[Scheduled upstream tag check] --> B{Termux tag exists?}
+    B -- Current --> C[No release build]
+    B -- Missing or older --> D[Dispatch package-release.yml]
+    D --> E[Download official linux-arm64 payload]
+    E --> F[Verify upstream manifest checksum]
+    F --> G[Run optional payload patch hook]
+    G --> H[Compile native Termux launcher]
+    H --> I[Run compatibility checks]
+    I --> J[Package claude plus claude.glibc]
+    J --> K[Generate SHA-256 checksum]
+    K --> L[Create provenance attestations]
+    L --> M[Publish vX.Y.Z-termux release]
+    M --> N[install.sh downloads latest release asset]
+```
+
+## Termux Compatibility Layer
+
+The release archive contains two files:
+
+```text
+claude         # native Termux launcher
+claude.glibc   # official linux-arm64 Claude payload
+```
+
+The launcher exists because the upstream payload is a glibc Linux ELF, while Termux is an Android/Bionic environment. The launcher accounts for these boundaries:
+
+- **Native Termux gate**: validates `$PREFIX`, `$TERMUX_VERSION`, and the Termux-style prefix before launching.
+- **glibc loader path**: executes `$PREFIX/glibc/lib/ld-linux-aarch64.so.1 --library-path $PREFIX/glibc/lib ./claude.glibc`.
+- **Bionic preload cleanup**: clears `LD_PRELOAD` and `LD_LIBRARY_PATH` so Termux/Bionic shims are not handed to the glibc loader.
+- **CA bundle path**: sets `SSL_CERT_FILE=$PREFIX/etc/tls/cert.pem`.
+- **Resolver bridge**: starts a native Bionic localhost CONNECT proxy, sets `HTTPS_PROXY`/`HTTP_PROXY` to that proxy, and sets `CLAUDE_CODE_PROXY_RESOLVES_HOSTS=true` so Claude network paths can let the proxy resolve upstream hostnames through Termux/Android DNS instead of reading `/etc/resolv.conf`.
+- **Resolver hints**: keeps IPv4-first hints with `RES_OPTIONS`, `NODE_OPTIONS`, and `BUN_CONFIG_DNS_RESULT_ORDER` for code paths that still use embedded resolver settings. Set `CLAUDE_TERMUX_ALLOW_IPV6=1` to disable the IPv4 bias.
+- **Temp paths**: ensures `TMPDIR` and `BUN_TMPDIR` use Termux-writable temp storage.
+- **Browser handoff**: uses `termux-open-url` as `$BROWSER` when available so login URLs can open in Android.
+- **Updater guard**: refuses upstream `claude update`, `claude upgrade`, and `claude install` paths because `/proc/self/exe` can resolve to the glibc loader rather than the Claude payload. Updates should come from this fork's release artifacts.
+
+If you already run a proxy, set `CLAUDE_TERMUX_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`, or `ALL_PROXY` before launching `claude`; the launcher will preserve it and still set `CLAUDE_CODE_PROXY_RESOLVES_HOSTS=true` when unset. To disable the embedded proxy fallback, set `CLAUDE_TERMUX_NO_DNS_PROXY=1`.
 
 ## Reporting Bugs
 
