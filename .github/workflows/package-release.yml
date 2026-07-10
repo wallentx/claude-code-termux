@@ -67,10 +67,12 @@ jobs:
             printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
           done
       - name: Attest release archive
+        id: attest_archive
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/${{ steps.release.outputs.archive }}
       - name: Attest release checksum
+        id: attest_checksum
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/${{ steps.release.outputs.checksum_file }}
@@ -81,6 +83,8 @@ jobs:
           ACTUAL_VERSION: ${{ steps.release.outputs.actual_version }}
           ARCHIVE: ${{ steps.release.outputs.archive }}
           CHECKSUM_FILE: ${{ steps.release.outputs.checksum_file }}
+          ARCHIVE_ATTESTATION_URL: ${{ steps.attest_archive.outputs.attestation-url }}
+          CHECKSUM_ATTESTATION_URL: ${{ steps.attest_checksum.outputs.attestation-url }}
         run: |
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::notice title=Release already exists::$RELEASE_TAG"
@@ -92,6 +96,11 @@ jobs:
             echo "Termux packaging for Claude Code $ACTUAL_VERSION."
             echo
             echo "This release contains the native Termux launcher and the patched upstream linux-arm64 payload."
+            echo
+            echo "Build provenance:"
+            echo
+            echo "- [$ARCHIVE]($ARCHIVE_ATTESTATION_URL)"
+            echo "- [$CHECKSUM_FILE]($CHECKSUM_ATTESTATION_URL)"
             echo
             echo "Install with:"
             echo
