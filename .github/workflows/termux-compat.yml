@@ -61,6 +61,7 @@ jobs:
         clang
         curl
         file
+        git
         glibc
         glibc-runner
         resolv-conf
