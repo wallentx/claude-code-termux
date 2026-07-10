@@ -49,14 +49,24 @@ jobs:
       - name: Upstream release metadata
         run: .github/scripts/release-check.sh --json
 
-  termux-smoke:
-    name: Termux runtime smoke
+  artifact-build:
+    name: Native Termux artifact and runtime checks
     needs: changes
     if: ${{ needs.changes.outputs.termux_compat == 'true' }}
-    runs-on: [self-hosted, termux, aarch64]
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Runtime compatibility checks
-        run: .github/scripts/compat-test.sh --network --auth-probe
+    uses: wallentx/gh-actions/.github/workflows/termux-run.yml@main
+    with:
+      packages: |
+        binutils
+        ca-certificates
+        clang
+        curl
+        file
+        glibc
+        glibc-runner
+        resolv-conf
+        tar
+      commands: |
+        set -Eeuo pipefail
+
+        .github/scripts/package-release.sh latest
+        .github/scripts/compat-test.sh --artifacts --skip-build --network --auth-probe

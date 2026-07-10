@@ -42,7 +42,7 @@ curl -fsSL https://claude.ai/install.sh | bash
 
 CI checks upstream Claude Code tags from `anthropics/claude-code` and compares them with this fork's `vX.Y.Z-termux` release tags. When upstream has a newer tag, or when this fork has no release yet, the scheduled detector dispatches the packaging workflow for the exact upstream version it found.
 
-Release artifacts are built on native Termux runners. The build downloads the official upstream payload, verifies upstream metadata, runs an optional payload patch hook if present, builds the native launcher, tests the artifact locally, attests the release assets, and publishes a GitHub release. Upstream and patched binaries stay out of git.
+Release artifacts are built and runtime-tested in Termux on GitHub-hosted ARM runners through the shared `wallentx/gh-actions` Termux workflow. The build downloads the official upstream payload, verifies upstream metadata, compiles the native launcher, validates the release artifacts, attests the release assets, and publishes a GitHub release. Upstream and patched binaries stay out of git.
 
 ```mermaid
 graph TD

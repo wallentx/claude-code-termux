@@ -8,6 +8,7 @@ NETWORK=0
 AUTH_PROBE=0
 SKIP_BUILD=0
 SKIP_SHELLCHECK=0
+ARTIFACTS=0
 PAYLOAD="./claude.glibc"
 LAUNCHER="./claude"
 FAILED=0
@@ -39,6 +40,7 @@ any host. Runtime launcher smokes run only on native Termux aarch64.
 Options:
   --network          Probe Anthropic and Claude auth hosts over IPv4 with curl
   --auth-probe       Try a bounded invalid-code auth exchange to catch DNS timeouts
+  --artifacts        Require and validate launcher and payload ELF artifacts
   --skip-build       Do not rebuild ./claude before smoke tests
   --skip-shellcheck  Skip ShellCheck even when installed
   -h, --help         Show this help
@@ -53,6 +55,9 @@ while [[ $# -gt 0 ]]; do
     --auth-probe)
       AUTH_PROBE=1
       NETWORK=1
+      ;;
+    --artifacts)
+      ARTIFACTS=1
       ;;
     --skip-build)
       SKIP_BUILD=1
@@ -112,8 +117,9 @@ is_termux_runtime() {
   [[ -n "${TERMUX_VERSION:-}" && -n "${PREFIX:-}" && "$(uname -m)" == "aarch64" ]]
 }
 
-check_interpreter() {
+check_payload_elf() {
   local interp=""
+  local machine=""
 
   [[ -s "$PAYLOAD" ]] || {
     printf 'missing payload: %s\n' "$PAYLOAD" >&2
@@ -121,14 +127,48 @@ check_interpreter() {
   }
 
   command -v readelf >/dev/null 2>&1 || {
-    printf 'readelf is required for ELF interpreter checks\n' >&2
+    printf 'readelf is required for ELF checks\n' >&2
     return 1
   }
 
+  machine="$(readelf -h "$PAYLOAD" 2>/dev/null |
+    awk -F: '/Machine:/ { sub(/^[[:space:]]+/, "", $2); print $2 }')"
   interp="$(readelf -l "$PAYLOAD" 2>/dev/null |
     awk -F': ' '/Requesting program interpreter/ { gsub(/]$/, "", $2); print $2 }')"
+  [[ "$machine" == "AArch64" ]] || {
+    printf 'unexpected payload machine: %s\n' "${machine:-missing}" >&2
+    return 1
+  }
   [[ "$interp" == "/lib/ld-linux-aarch64.so.1" ]] || {
-    printf 'unexpected interpreter: %s\n' "${interp:-missing}" >&2
+    printf 'unexpected payload interpreter: %s\n' "${interp:-missing}" >&2
+    return 1
+  }
+}
+
+check_launcher_elf() {
+  local interp=""
+  local machine=""
+
+  [[ -s "$LAUNCHER" ]] || {
+    printf 'missing launcher: %s\n' "$LAUNCHER" >&2
+    return 1
+  }
+
+  command -v readelf >/dev/null 2>&1 || {
+    printf 'readelf is required for ELF checks\n' >&2
+    return 1
+  }
+
+  machine="$(readelf -h "$LAUNCHER" 2>/dev/null |
+    awk -F: '/Machine:/ { sub(/^[[:space:]]+/, "", $2); print $2 }')"
+  interp="$(readelf -l "$LAUNCHER" 2>/dev/null |
+    awk -F': ' '/Requesting program interpreter/ { gsub(/]$/, "", $2); print $2 }')"
+  [[ "$machine" == "AArch64" ]] || {
+    printf 'unexpected launcher machine: %s\n' "${machine:-missing}" >&2
+    return 1
+  }
+  [[ "$interp" == "/system/bin/linker64" ]] || {
+    printf 'unexpected launcher interpreter: %s\n' "${interp:-missing}" >&2
     return 1
   }
 }
@@ -230,6 +270,11 @@ fi
 
 run_check "Release metadata probe" .github/scripts/release-check.sh --quiet
 
+if [[ "$ARTIFACTS" -eq 1 ]] || is_termux_runtime; then
+  run_check "Launcher ELF target" check_launcher_elf
+  run_check "Payload ELF target" check_payload_elf
+fi
+
 if ! is_termux_runtime; then
   warn "Not native Termux aarch64; skipping launcher runtime smokes"
   [[ "$FAILED" -eq 0 ]] || exit 1
@@ -243,7 +288,6 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
   run_check "Build launcher" ./build.sh
 fi
 
-run_check "Payload ELF interpreter" check_interpreter
 check_direct_payload_note
 capture_check "Launcher version" "$LAUNCHER" --version
 silent_check "Launcher help" "$LAUNCHER" --help

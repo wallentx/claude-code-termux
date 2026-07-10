@@ -53,16 +53,28 @@ command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required."
 command -v tar >/dev/null 2>&1 || die "tar is required."
 
 info "Building launcher"
-./build.sh "$VERSION" --force-download
+mkdir -p "$DIST_DIR"
+BUILD_VERSION_FILE="${DIST_DIR%/}/.build-version"
+trap 'rm -f "$BUILD_VERSION_FILE"' EXIT
+BUILD_ARGS=("$VERSION" --force-download)
+if [[ -z "${TERMUX_VERSION:-}" || -z "${PREFIX:-}" || "$(uname -m)" != "aarch64" ]]; then
+  BUILD_ARGS+=(--cross-compile)
+fi
+CLAUDE_TERMUX_BUILD_VERSION_OUTPUT="$BUILD_VERSION_FILE" ./build.sh "${BUILD_ARGS[@]}"
 
-ACTUAL_VERSION="$(./claude --version 2>/dev/null | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?).*/\1/')" ||
-  die "Unable to read built Claude version."
+ACTUAL_VERSION="$(<"$BUILD_VERSION_FILE")"
 [[ -n "$ACTUAL_VERSION" ]] || die "Unable to parse built Claude version."
 
-info "Running compatibility checks"
-.github/scripts/compat-test.sh --skip-build
+if [[ -n "${TERMUX_VERSION:-}" && -n "${PREFIX:-}" && "$(uname -m)" == "aarch64" ]]; then
+  RUNTIME_VERSION="$(./claude --version 2>/dev/null | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?).*/\1/')" ||
+    die "Unable to read built Claude version."
+  [[ "$RUNTIME_VERSION" == "$ACTUAL_VERSION" ]] ||
+    die "Built version $RUNTIME_VERSION does not match downloaded version $ACTUAL_VERSION."
+fi
 
-mkdir -p "$DIST_DIR"
+info "Running compatibility checks"
+.github/scripts/compat-test.sh --artifacts --skip-build
+
 ARCHIVE="${DIST_DIR%/}/${PACKAGE_PREFIX}-aarch64.tar.gz"
 CHECKSUM_FILE="${ARCHIVE}.sha256"
 RELEASE_TAG="v${ACTUAL_VERSION}-termux"

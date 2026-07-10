@@ -33,7 +33,10 @@ DOWNLOAD_PLATFORM="linux-arm64"
 DOWNLOAD_TARGET="latest"
 FORCE_DOWNLOAD=0
 NO_DOWNLOAD=0
+CROSS_COMPILE=0
 DOWNLOADER=""
+RESOLVED_VERSION=""
+BUILD_VERSION_OUTPUT="${CLAUDE_TERMUX_BUILD_VERSION_OUTPUT:-}"
 
 show_help() {
   cat <<'EOF'
@@ -49,10 +52,14 @@ If this checkout still has the upstream payload at ./claude and no
 Options:
   --force-download           Replace ./claude.glibc with a fresh upstream download
   --no-download              Require an existing local payload
+  --cross-compile            Build the launcher with an Android NDK compiler
 
 Environment:
   CC                         C compiler override
+  ANDROID_NDK_ROOT           Android NDK root for hosted cross-builds
   CLAUDE_DOWNLOAD_BASE_URL    Override upstream release base URL
+  CLAUDE_TERMUX_BUILD_VERSION_OUTPUT
+                             Write the resolved download version to this file
   CLAUDE_TERMUX_SKIP_SMOKE=1 Skip ./claude --version smoke test
 EOF
 }
@@ -161,6 +168,7 @@ download_upstream_payload() {
   mv -f "$tmp_bin" "claude.glibc"
   tmp_bin=""
   trap - EXIT
+  RESOLVED_VERSION="$version"
   ok "Downloaded upstream Claude Code $version"
 }
 
@@ -195,6 +203,9 @@ while [[ $# -gt 0 ]]; do
       NO_DOWNLOAD=1
       FORCE_DOWNLOAD=0
       ;;
+    --cross-compile)
+      CROSS_COMPILE=1
+      ;;
     latest|stable|[0-9]*.[0-9]*.[0-9]*)
       DOWNLOAD_TARGET="$1"
       ;;
@@ -205,11 +216,12 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-if [[ "${TERMUX_VERSION:-}" == "" || "${PREFIX:-}" == "" ]]; then
-  die "This build script is intended for native Termux."
+if [[ "$CROSS_COMPILE" -eq 0 ]]; then
+  if [[ "${TERMUX_VERSION:-}" == "" || "${PREFIX:-}" == "" ]]; then
+    die "Native builds require Termux. Use --cross-compile with an Android NDK compiler on other hosts."
+  fi
+  [[ "$(uname -m)" == "aarch64" ]] || die "Architecture must be aarch64."
 fi
-
-[[ "$(uname -m)" == "aarch64" ]] || die "Architecture must be aarch64."
 [[ -f "lib/claude_helper.c" ]] || die "Missing lib/claude_helper.c."
 
 if [[ "$FORCE_DOWNLOAD" -eq 1 ]]; then
@@ -228,22 +240,37 @@ fi
 [[ -s "claude.glibc" ]] || die "claude.glibc is empty."
 chmod 0755 "claude.glibc"
 
+if [[ -n "$BUILD_VERSION_OUTPUT" ]]; then
+  [[ -n "$RESOLVED_VERSION" ]] ||
+    die "Cannot write a build version without downloading the payload."
+  mkdir -p "$(dirname "$BUILD_VERSION_OUTPUT")"
+  printf '%s\n' "$RESOLVED_VERSION" >"$BUILD_VERSION_OUTPUT"
+fi
+
 if [[ -x ".github/scripts/patch-payload.sh" ]]; then
   info "Running payload patch hook"
   .github/scripts/patch-payload.sh "claude.glibc"
 fi
 
-GLIBC_LOADER="${PREFIX}/glibc/lib/ld-linux-aarch64.so.1"
-CA_BUNDLE="${PREFIX}/etc/tls/cert.pem"
-[[ -x "$GLIBC_LOADER" ]] || die "Missing Termux glibc loader: $GLIBC_LOADER. Install glibc-repo and glibc."
-[[ -r "$CA_BUNDLE" ]] || die "Missing Termux CA bundle: $CA_BUNDLE. Install ca-certificates."
-if [[ ! -r "${PREFIX}/etc/resolv.conf" ]]; then
-  info "Resolver config missing: ${PREFIX}/etc/resolv.conf. Launcher DNS proxy fallback will be used at runtime."
+if [[ "$CROSS_COMPILE" -eq 0 ]]; then
+  GLIBC_LOADER="${PREFIX}/glibc/lib/ld-linux-aarch64.so.1"
+  CA_BUNDLE="${PREFIX}/etc/tls/cert.pem"
+  [[ -x "$GLIBC_LOADER" ]] || die "Missing Termux glibc loader: $GLIBC_LOADER. Install glibc-repo and glibc."
+  [[ -r "$CA_BUNDLE" ]] || die "Missing Termux CA bundle: $CA_BUNDLE. Install ca-certificates."
+  if [[ ! -r "${PREFIX}/etc/resolv.conf" ]]; then
+    info "Resolver config missing: ${PREFIX}/etc/resolv.conf. Launcher DNS proxy fallback will be used at runtime."
+  fi
 fi
 
 CC_BIN="${CC:-}"
 if [[ -z "$CC_BIN" ]]; then
-  if command -v clang >/dev/null 2>&1; then
+  if [[ "$CROSS_COMPILE" -eq 1 ]]; then
+    NDK_ROOT="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-${ANDROID_NDK:-}}}"
+    [[ -n "$NDK_ROOT" ]] ||
+      die "ANDROID_NDK_ROOT or CC is required for cross-compilation."
+    CC_BIN="${NDK_ROOT%/}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+    [[ -x "$CC_BIN" ]] || die "Android NDK compiler not found: $CC_BIN"
+  elif command -v clang >/dev/null 2>&1; then
     CC_BIN="$(command -v clang)"
   elif command -v cc >/dev/null 2>&1; then
     CC_BIN="$(command -v cc)"
@@ -257,7 +284,16 @@ info "Compiling native Termux launcher with $CC_BIN"
 chmod 0755 "claude"
 ok "Built ./claude launcher"
 
-if [[ "${CLAUDE_TERMUX_SKIP_SMOKE:-0}" != "1" ]]; then
+if [[ "$CROSS_COMPILE" -eq 1 ]]; then
+  command -v readelf >/dev/null 2>&1 || die "readelf is required for cross-build verification."
+  MACHINE="$(readelf -h "claude" | awk -F: '/Machine:/ { sub(/^[[:space:]]+/, "", $2); print $2 }')"
+  INTERP="$(readelf -l "claude" 2>/dev/null |
+    awk -F': ' '/Requesting program interpreter/ { gsub(/]$/, "", $2); print $2 }')"
+  [[ "$MACHINE" == "AArch64" ]] || die "Cross-built launcher has unexpected machine: ${MACHINE:-unknown}"
+  [[ "$INTERP" == "/system/bin/linker64" ]] ||
+    die "Cross-built launcher has unexpected interpreter: ${INTERP:-unknown}"
+  ok "Cross-built Android AArch64 launcher verified"
+elif [[ "${CLAUDE_TERMUX_SKIP_SMOKE:-0}" != "1" ]]; then
   info "Running smoke test: ./claude --version"
   VERSION="$(./claude --version)"
   ok "Claude online: $VERSION"
