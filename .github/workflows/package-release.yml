@@ -82,7 +82,7 @@ jobs:
           ARCHIVE: ${{ steps.release.outputs.archive }}
           CHECKSUM_FILE: ${{ steps.release.outputs.checksum_file }}
         run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::notice title=Release already exists::$RELEASE_TAG"
             exit 0
           fi
@@ -103,6 +103,7 @@ jobs:
           gh release create "$RELEASE_TAG" \
             "dist/$ARCHIVE" \
             "dist/$CHECKSUM_FILE" \
+            --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Claude Code $ACTUAL_VERSION for Termux" \
             --notes-file "$notes"
