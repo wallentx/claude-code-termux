@@ -9,6 +9,7 @@ URL="${CLAUDE_TERMUX_URL:-$BASE_URL/$ASSET}"
 CHECKSUM_URL="${CLAUDE_TERMUX_CHECKSUM_URL:-$URL.sha256}"
 INSTALL_DIR="${CLAUDE_TERMUX_INSTALL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
 PACKAGE_FILES=(claude.glibc claude-termux-update claude)
+UPDATE_FILES=("${PACKAGE_FILES[@]}")
 CHECK_ONLY=0
 DRY_RUN=0
 FORCE=0
@@ -89,7 +90,7 @@ restore_backups() {
 
   [[ "$COMMIT_STARTED" -eq 1 ]] || return 0
 
-  for file in "${PACKAGE_FILES[@]}"; do
+    for file in "${UPDATE_FILES[@]}"; do
     target="$INSTALL_DIR/$file"
     backup="$INSTALL_DIR/.$file.bak.$$"
     staged="$INSTALL_DIR/.$file.new.$$"
@@ -110,7 +111,7 @@ cleanup() {
     restore_backups
   fi
 
-  for file in "${PACKAGE_FILES[@]}"; do
+  for file in "${UPDATE_FILES[@]}"; do
     rm -f "$INSTALL_DIR/.$file.new.$$"
     if [[ "$INSTALL_SUCCESS" -eq 1 ]]; then
       rm -f "$INSTALL_DIR/.$file.bak.$$"
@@ -160,10 +161,10 @@ ACTUAL_CHECKSUM=""
 mkdir -p "$EXTRACT_DIR"
 
 info "Downloading latest Claude Termux release"
-EFFECTIVE_URL="$(curl -fL --retry 3 --retry-delay 2 -w '%{url_effective}' -o "$ARCHIVE" "$URL")"
+EFFECTIVE_URL="$(curl -fsSL --retry 3 --retry-delay 2 -w '%{url_effective}' -o "$ARCHIVE" "$URL")"
 
 info "Downloading release checksum"
-curl -fL --retry 3 --retry-delay 2 -o "$CHECKSUM_FILE" "$CHECKSUM_URL"
+curl -fsSL --retry 3 --retry-delay 2 -o "$CHECKSUM_FILE" "$CHECKSUM_URL"
 
 info "Verifying release checksum"
 IFS=' ' read -r EXPECTED_CHECKSUM CHECKSUM_NAME _ <"$CHECKSUM_FILE" ||
@@ -177,8 +178,26 @@ ACTUAL_CHECKSUM="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
 ok "Checksum verified"
 
 info "Extracting release artifact"
-tar -xzf "$ARCHIVE" -C "$EXTRACT_DIR" "${PACKAGE_FILES[@]}"
-for file in "${PACKAGE_FILES[@]}"; do
+mapfile -t ARCHIVE_FILES < <(tar -tzf "$ARCHIVE")
+archive_has_file() {
+  local expected=$1
+  local entry=""
+
+  for entry in "${ARCHIVE_FILES[@]}"; do
+    [[ "$entry" == "$expected" || "$entry" == "./$expected" ]] && return 0
+  done
+  return 1
+}
+
+archive_has_file claude || die "Artifact missing launcher: claude"
+archive_has_file claude.glibc || die "Artifact missing payload: claude.glibc"
+if ! archive_has_file claude-termux-update; then
+  warn "Legacy release has no updater helper; preserving installed launcher and updater"
+  UPDATE_FILES=(claude.glibc)
+fi
+
+tar -xzf "$ARCHIVE" -C "$EXTRACT_DIR" "${UPDATE_FILES[@]}"
+for file in "${UPDATE_FILES[@]}"; do
   [[ -f "$EXTRACT_DIR/$file" && ! -L "$EXTRACT_DIR/$file" &&
     -s "$EXTRACT_DIR/$file" && -x "$EXTRACT_DIR/$file" ]] ||
     die "Artifact has invalid file: $file"
@@ -190,7 +209,7 @@ if [[ "$EFFECTIVE_URL" == */releases/download/*/* ]]; then
 fi
 
 FILES_MATCH=1
-for file in "${PACKAGE_FILES[@]}"; do
+for file in "${UPDATE_FILES[@]}"; do
   if [[ ! -f "$INSTALL_DIR/$file" ]] ||
     ! cmp -s "$EXTRACT_DIR/$file" "$INSTALL_DIR/$file"; then
     FILES_MATCH=0
@@ -209,13 +228,13 @@ if [[ "$CHECK_ONLY" -eq 1 ]]; then
 fi
 
 info "Staging $RELEASE_LABEL"
-for file in "${PACKAGE_FILES[@]}"; do
+for file in "${UPDATE_FILES[@]}"; do
   install -m 0755 "$EXTRACT_DIR/$file" "$INSTALL_DIR/.$file.new.$$"
 done
 
 info "Installing $RELEASE_LABEL"
 COMMIT_STARTED=1
-for file in "${PACKAGE_FILES[@]}"; do
+for file in "${UPDATE_FILES[@]}"; do
   if [[ -e "$INSTALL_DIR/$file" ]]; then
     mv -f "$INSTALL_DIR/$file" "$INSTALL_DIR/.$file.bak.$$"
   fi

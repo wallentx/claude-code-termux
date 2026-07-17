@@ -98,7 +98,7 @@ cleanup() {
     [[ -n "$CLAUDE_BAK" && -f "$CLAUDE_BAK" ]] && rm -f "$CLAUDE_BAK"
     [[ -n "$PAYLOAD_BAK" && -f "$PAYLOAD_BAK" ]] && rm -f "$PAYLOAD_BAK"
     [[ -n "$UPDATER_BAK" && -f "$UPDATER_BAK" ]] && rm -f "$UPDATER_BAK"
-    return
+    return 0
   fi
 
   [[ -f "$INSTALL_BIN_DIR/claude" ]] && rm -f "$INSTALL_BIN_DIR/claude"

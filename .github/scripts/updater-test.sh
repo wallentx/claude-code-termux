@@ -32,15 +32,20 @@ write_executable() {
 build_fixture() {
   local launcher_body=$1
   local payload_body=$2
+  local include_updater=${3:-1}
 
   rm -rf "$ARTIFACT_DIR"
   mkdir -p "$ARTIFACT_DIR"
   write_executable "$ARTIFACT_DIR/claude" "$launcher_body"
   write_executable "$ARTIFACT_DIR/claude.glibc" "$payload_body"
-  cp ./claude-termux-update "$ARTIFACT_DIR/claude-termux-update"
-  chmod 0755 "$ARTIFACT_DIR/claude-termux-update"
-  tar -czf "$ARCHIVE" -C "$ARTIFACT_DIR" \
-    claude claude.glibc claude-termux-update
+  if [[ "$include_updater" -eq 1 ]]; then
+    cp ./claude-termux-update "$ARTIFACT_DIR/claude-termux-update"
+    chmod 0755 "$ARTIFACT_DIR/claude-termux-update"
+    tar -czf "$ARCHIVE" -C "$ARTIFACT_DIR" \
+      claude claude.glibc claude-termux-update
+  else
+    tar -czf "$ARCHIVE" -C "$ARTIFACT_DIR" claude claude.glibc
+  fi
   (
     cd "$TEST_ROOT"
     sha256sum "$(basename "$ARCHIVE")" >"$(basename "$CHECKSUM_FILE")"
@@ -65,12 +70,18 @@ run_fixture_update >/dev/null
 [[ "$("$INSTALL_DIR/claude")" == "fixture-1" ]]
 [[ "$("$INSTALL_DIR/claude.glibc")" == "payload-1" ]]
 
+build_fixture 'printf "legacy launcher\\n"' 'printf "payload-legacy\\n"' 0
+run_fixture_update >/dev/null
+[[ "$("$INSTALL_DIR/claude")" == "fixture-1" ]]
+[[ "$("$INSTALL_DIR/claude.glibc")" == "payload-legacy" ]]
+[[ -x "$INSTALL_DIR/claude-termux-update" ]]
+
 build_fixture 'exit 23' 'printf "payload-bad\\n"'
 if run_fixture_update >/dev/null 2>&1; then
   printf 'Updater accepted a launcher that failed its smoke test.\n' >&2
   exit 1
 fi
 [[ "$("$INSTALL_DIR/claude")" == "fixture-1" ]]
-[[ "$("$INSTALL_DIR/claude.glibc")" == "payload-1" ]]
+[[ "$("$INSTALL_DIR/claude.glibc")" == "payload-legacy" ]]
 
 printf 'Updater transaction and rollback checks passed.\n'
