@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../.."
 VERSION="${1:-latest}"
 DIST_DIR="${DIST_DIR:-dist}"
 PACKAGE_PREFIX="claude-termux"
-PACKAGE_FILES=(claude claude.glibc)
+PACKAGE_FILES=(claude claude.glibc claude-termux-update)
 
 if [[ -t 1 ]]; then
   GREEN="\033[32m"

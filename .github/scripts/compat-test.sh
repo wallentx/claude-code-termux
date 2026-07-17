@@ -11,6 +11,7 @@ SKIP_SHELLCHECK=0
 ARTIFACTS=0
 PAYLOAD="./claude.glibc"
 LAUNCHER="./claude"
+UPDATER="./claude-termux-update"
 FAILED=0
 
 if [[ -t 1 ]]; then
@@ -173,18 +174,23 @@ check_launcher_elf() {
   }
 }
 
-check_guarded_command() {
+check_update_interceptor() {
   local command=$1
   local output=""
-  local status=0
 
-  output="$("$LAUNCHER" "$command" 2>&1)" || status=$?
-  [[ "$status" -eq 2 ]] || {
-    printf 'expected exit 2, got %s\n%s\n' "$status" "$output" >&2
+  output="$("$LAUNCHER" "$command" --help 2>&1)" || {
+    printf 'updater dispatch failed\n%s\n' "$output" >&2
     return 1
   }
-  [[ "$output" == *"Refusing to run"* ]] || {
-    printf 'guard message missing\n%s\n' "$output" >&2
+  [[ "$output" == *"Claude Termux updater"* ]] || {
+    printf 'updater help missing\n%s\n' "$output" >&2
+    return 1
+  }
+}
+
+check_updater_artifact() {
+  [[ -x "$UPDATER" ]] || {
+    printf 'missing executable updater: %s\n' "$UPDATER" >&2
     return 1
   }
 }
@@ -260,10 +266,10 @@ auth_probe() {
 }
 
 info "Running portable shell checks"
-run_check "Bash syntax" bash -n build.sh install.sh .github/scripts/compat-test.sh .github/scripts/release-check.sh .github/scripts/package-release.sh
+run_check "Bash syntax" bash -n build.sh install.sh claude-termux-update .github/scripts/compat-test.sh .github/scripts/updater-test.sh .github/scripts/release-check.sh .github/scripts/package-release.sh
 
 if [[ "$SKIP_SHELLCHECK" -eq 0 && -x "$(command -v shellcheck || true)" ]]; then
-  run_check "ShellCheck" shellcheck build.sh install.sh .github/scripts/compat-test.sh .github/scripts/release-check.sh .github/scripts/package-release.sh
+  run_check "ShellCheck" shellcheck build.sh install.sh claude-termux-update .github/scripts/compat-test.sh .github/scripts/updater-test.sh .github/scripts/release-check.sh .github/scripts/package-release.sh
 else
   warn "ShellCheck not installed or skipped"
 fi
@@ -273,6 +279,7 @@ run_check "Release metadata probe" .github/scripts/release-check.sh --quiet
 if [[ "$ARTIFACTS" -eq 1 ]] || is_termux_runtime; then
   run_check "Launcher ELF target" check_launcher_elf
   run_check "Payload ELF target" check_payload_elf
+  run_check "Updater artifact" check_updater_artifact
 fi
 
 if ! is_termux_runtime; then
@@ -293,9 +300,10 @@ capture_check "Launcher version" "$LAUNCHER" --version
 silent_check "Launcher help" "$LAUNCHER" --help
 silent_check "Auth help" "$LAUNCHER" auth --help
 silent_check "Auth login help" "$LAUNCHER" auth login --help
-run_check "Guard update command" check_guarded_command update
-run_check "Guard upgrade command" check_guarded_command upgrade
-run_check "Guard install command" check_guarded_command install
+run_check "Intercept update command" check_update_interceptor update
+run_check "Intercept upgrade command" check_update_interceptor upgrade
+run_check "Intercept install command" check_update_interceptor install
+run_check "Updater transaction and rollback" .github/scripts/updater-test.sh
 run_check "Local release comparison" .github/scripts/release-check.sh --quiet
 
 if [[ "$NETWORK" -eq 1 ]]; then

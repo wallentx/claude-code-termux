@@ -31,6 +31,7 @@ Usage: ./install.sh
 Downloads the latest Claude Termux release artifact from GitHub and installs:
   $PREFIX/bin/claude
   $PREFIX/bin/claude.glibc
+  $PREFIX/bin/claude-termux-update
 
 Options:
   --dry-run                     Check local prerequisites without downloading
@@ -88,6 +89,7 @@ EXTRACT_DIR="${TMP_ROOT%/}/.claude-termux-install.$$"
 INSTALL_BIN_DIR="${PREFIX}/bin"
 CLAUDE_BAK=""
 PAYLOAD_BAK=""
+UPDATER_BAK=""
 INSTALL_SUCCESS=0
 
 cleanup() {
@@ -95,13 +97,16 @@ cleanup() {
   if [[ "$INSTALL_SUCCESS" -eq 1 ]]; then
     [[ -n "$CLAUDE_BAK" && -f "$CLAUDE_BAK" ]] && rm -f "$CLAUDE_BAK"
     [[ -n "$PAYLOAD_BAK" && -f "$PAYLOAD_BAK" ]] && rm -f "$PAYLOAD_BAK"
+    [[ -n "$UPDATER_BAK" && -f "$UPDATER_BAK" ]] && rm -f "$UPDATER_BAK"
     return
   fi
 
   [[ -f "$INSTALL_BIN_DIR/claude" ]] && rm -f "$INSTALL_BIN_DIR/claude"
   [[ -f "$INSTALL_BIN_DIR/claude.glibc" ]] && rm -f "$INSTALL_BIN_DIR/claude.glibc"
+  [[ -f "$INSTALL_BIN_DIR/claude-termux-update" ]] && rm -f "$INSTALL_BIN_DIR/claude-termux-update"
   [[ -n "$CLAUDE_BAK" && -f "$CLAUDE_BAK" ]] && mv -f "$CLAUDE_BAK" "$INSTALL_BIN_DIR/claude"
   [[ -n "$PAYLOAD_BAK" && -f "$PAYLOAD_BAK" ]] && mv -f "$PAYLOAD_BAK" "$INSTALL_BIN_DIR/claude.glibc"
+  [[ -n "$UPDATER_BAK" && -f "$UPDATER_BAK" ]] && mv -f "$UPDATER_BAK" "$INSTALL_BIN_DIR/claude-termux-update"
 }
 trap cleanup EXIT
 
@@ -121,9 +126,11 @@ if command -v sha256sum >/dev/null 2>&1; then
 fi
 
 info "Extracting release artifact"
-tar -xzf "$ARCHIVE" -C "$EXTRACT_DIR" claude claude.glibc
+tar -xzf "$ARCHIVE" -C "$EXTRACT_DIR" claude claude.glibc claude-termux-update
 [[ -x "$EXTRACT_DIR/claude" ]] || die "Artifact missing executable: claude"
 [[ -s "$EXTRACT_DIR/claude.glibc" ]] || die "Artifact missing payload: claude.glibc"
+[[ -x "$EXTRACT_DIR/claude-termux-update" ]] ||
+  die "Artifact missing updater: claude-termux-update"
 
 if [[ -f "$INSTALL_BIN_DIR/claude" ]]; then
   CLAUDE_BAK="$INSTALL_BIN_DIR/claude.bak.$$"
@@ -133,9 +140,14 @@ if [[ -f "$INSTALL_BIN_DIR/claude.glibc" ]]; then
   PAYLOAD_BAK="$INSTALL_BIN_DIR/claude.glibc.bak.$$"
   mv -f "$INSTALL_BIN_DIR/claude.glibc" "$PAYLOAD_BAK"
 fi
+if [[ -f "$INSTALL_BIN_DIR/claude-termux-update" ]]; then
+  UPDATER_BAK="$INSTALL_BIN_DIR/claude-termux-update.bak.$$"
+  mv -f "$INSTALL_BIN_DIR/claude-termux-update" "$UPDATER_BAK"
+fi
 
 install -m 0755 "$EXTRACT_DIR/claude" "$INSTALL_BIN_DIR/claude"
 install -m 0755 "$EXTRACT_DIR/claude.glibc" "$INSTALL_BIN_DIR/claude.glibc"
+install -m 0755 "$EXTRACT_DIR/claude-termux-update" "$INSTALL_BIN_DIR/claude-termux-update"
 ok "Installed Claude Termux to $INSTALL_BIN_DIR"
 
 if [[ "${CLAUDE_TERMUX_SKIP_VERIFY:-0}" != "1" ]]; then

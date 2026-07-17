@@ -17,6 +17,7 @@
 
 #define DEFAULT_TERMUX_PREFIX "/data/data/com.termux/files/usr"
 #define CLAUDE_PAYLOAD_NAME "claude.glibc"
+#define CLAUDE_UPDATER_NAME "claude-termux-update"
 #define DNS_PROXY_HEADER_MAX 8192
 #define DNS_PROXY_BUFFER_SIZE 16384
 
@@ -25,7 +26,7 @@ static int path_join(char *buf, size_t len, const char *a, const char *b) {
     return written >= 0 && (size_t)written < len;
 }
 
-static int first_arg_is_guarded_command(int argc, char **argv) {
+static int first_arg_is_update_command(int argc, char **argv) {
     if (argc < 2) {
         return 0;
     }
@@ -34,14 +35,46 @@ static int first_arg_is_guarded_command(int argc, char **argv) {
            strcmp(argv[1], "install") == 0;
 }
 
-static void print_guarded_command_message(const char *command) {
+static int run_fork_updater(const char *install_dir, int argc, char **argv) {
+    char updater_path[PATH_MAX];
+    char **updater_argv = NULL;
+
+    if (!path_join(updater_path, sizeof(updater_path), install_dir,
+                   CLAUDE_UPDATER_NAME)) {
+        return 1;
+    }
+
+    if (access(updater_path, X_OK) != 0) {
+        fprintf(stderr,
+                "[claude-termux] Missing fork updater: %s\n"
+                "[claude-termux] Reinstall once from wallentx/claude-code-termux to "
+                "enable `claude %s`.\n",
+                updater_path, argv[1]);
+        return 2;
+    }
+
+    updater_argv = calloc((size_t)argc + 1, sizeof(*updater_argv));
+    if (updater_argv == NULL) {
+        perror("[claude-termux] updater calloc failed");
+        return 1;
+    }
+
+    updater_argv[0] = updater_path;
+    for (int i = 1; i < argc; i++) {
+        updater_argv[i] = argv[i];
+    }
+    updater_argv[argc] = NULL;
+
+    execv(updater_path, updater_argv);
+    perror("[claude-termux] updater execv failed");
+    free(updater_argv);
+    return 1;
+}
+
+static void print_upstream_updater_warning(void) {
     fprintf(stderr,
-            "[claude-termux] Refusing to run `claude %s` through the upstream updater.\n"
-            "[claude-termux] /proc/self/exe would point at the glibc loader, not the "
-            "Claude payload.\n"
-            "[claude-termux] Reinstall or update through the Termux port once its updater "
-            "is implemented.\n",
-            command);
+            "[claude-termux] Using the fork updater; the upstream updater remains disabled "
+            "because /proc/self/exe would point at the glibc loader.\n");
 }
 
 static const char *resolve_prefix(char *fallback, size_t fallback_len) {
@@ -631,9 +664,21 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (first_arg_is_guarded_command(argc, argv)) {
-        print_guarded_command_message(argv[1]);
-        return 2;
+    read_len = readlink("/proc/self/exe", exec_path, sizeof(exec_path) - 1);
+    if (read_len < 0 || read_len >= (ssize_t)sizeof(exec_path)) {
+        perror("[claude-termux] readlink /proc/self/exe failed");
+        return 1;
+    }
+    exec_path[read_len] = '\0';
+
+    if (snprintf(exec_path_copy, sizeof(exec_path_copy), "%s", exec_path) < 0) {
+        return 1;
+    }
+    install_dir = dirname(exec_path_copy);
+
+    if (first_arg_is_update_command(argc, argv)) {
+        print_upstream_updater_warning();
+        return run_fork_updater(install_dir, argc, argv);
     }
 
     if (!path_join(loader_path, sizeof(loader_path), prefix,
@@ -648,17 +693,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    read_len = readlink("/proc/self/exe", exec_path, sizeof(exec_path) - 1);
-    if (read_len < 0 || read_len >= (ssize_t)sizeof(exec_path)) {
-        perror("[claude-termux] readlink /proc/self/exe failed");
-        return 1;
-    }
-    exec_path[read_len] = '\0';
-
-    if (snprintf(exec_path_copy, sizeof(exec_path_copy), "%s", exec_path) < 0) {
-        return 1;
-    }
-    install_dir = dirname(exec_path_copy);
     if (!path_join(payload_path, sizeof(payload_path), install_dir, CLAUDE_PAYLOAD_NAME)) {
         return 1;
     }

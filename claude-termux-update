@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# Update the Termux launcher and payload from this fork's latest release.
+set -Eeuo pipefail
+
+REPO="${CLAUDE_TERMUX_REPO:-wallentx/claude-code-termux}"
+ASSET="${CLAUDE_TERMUX_ASSET:-claude-termux-aarch64.tar.gz}"
+BASE_URL="${CLAUDE_TERMUX_BASE_URL:-https://github.com/$REPO/releases/latest/download}"
+URL="${CLAUDE_TERMUX_URL:-$BASE_URL/$ASSET}"
+CHECKSUM_URL="${CLAUDE_TERMUX_CHECKSUM_URL:-$URL.sha256}"
+INSTALL_DIR="${CLAUDE_TERMUX_INSTALL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
+PACKAGE_FILES=(claude.glibc claude-termux-update claude)
+CHECK_ONLY=0
+DRY_RUN=0
+FORCE=0
+INSTALL_SUCCESS=0
+COMMIT_STARTED=0
+TEMP_DIR=""
+
+if [[ -t 1 ]]; then
+  GREEN="\033[32m"
+  YELLOW="\033[33m"
+  RED="\033[31m"
+  CYAN="\033[36m"
+  DIM="\033[2m"
+  RESET="\033[0m"
+else
+  GREEN="" YELLOW="" RED="" CYAN="" DIM="" RESET=""
+fi
+
+info() { printf '%b\n' " ${CYAN}[..]${RESET} ${DIM}$*${RESET}"; }
+ok() { printf '%b\n' " ${GREEN}[OK]${RESET} $*"; }
+warn() { printf '%b\n' " ${YELLOW}[WARN]${RESET} $*"; }
+die() { printf '%b\n' " ${RED}[ERR]${RESET} $*" >&2; exit 1; }
+
+show_help() {
+  cat <<'EOF'
+Claude Termux updater
+
+Usage: claude update [options]
+
+Downloads the latest wallentx/claude-code-termux release, verifies its
+checksum, and transactionally replaces only the Termux-owned launcher, payload, and
+updater helper. The Termux glibc loader is never modified.
+
+Options:
+  --check      Check whether installed files match the latest release
+  --dry-run    Check prerequisites without downloading or changing files
+  --force      Reinstall even when installed files already match
+  -h, --help   Show this help
+
+Environment:
+  CLAUDE_TERMUX_REPO          GitHub repo, default wallentx/claude-code-termux
+  CLAUDE_TERMUX_URL           Override release tarball URL
+  CLAUDE_TERMUX_CHECKSUM_URL  Override release checksum URL
+EOF
+}
+
+if [[ ${1:-} == "update" || ${1:-} == "upgrade" || ${1:-} == "install" ]]; then
+  shift
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check)
+      CHECK_ONLY=1
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      ;;
+    --force)
+      FORCE=1
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      die "Unknown argument: $1"
+      ;;
+  esac
+  shift
+done
+
+restore_backups() {
+  local file=""
+  local target=""
+  local backup=""
+  local staged=""
+
+  [[ "$COMMIT_STARTED" -eq 1 ]] || return 0
+
+  for file in "${PACKAGE_FILES[@]}"; do
+    target="$INSTALL_DIR/$file"
+    backup="$INSTALL_DIR/.$file.bak.$$"
+    staged="$INSTALL_DIR/.$file.new.$$"
+    if [[ -e "$backup" ]]; then
+      rm -f "$target"
+      mv -f "$backup" "$target" || true
+    elif [[ ! -e "$staged" ]]; then
+      rm -f "$target"
+    fi
+  done
+}
+
+cleanup() {
+  local status=$?
+  local file=""
+
+  if [[ "$INSTALL_SUCCESS" -ne 1 ]]; then
+    restore_backups
+  fi
+
+  for file in "${PACKAGE_FILES[@]}"; do
+    rm -f "$INSTALL_DIR/.$file.new.$$"
+    if [[ "$INSTALL_SUCCESS" -eq 1 ]]; then
+      rm -f "$INSTALL_DIR/.$file.bak.$$"
+    fi
+  done
+  [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" ]] && rm -rf "$TEMP_DIR"
+  return "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+[[ -n "${TERMUX_VERSION:-}" && -n "${PREFIX:-}" ]] ||
+  die "This updater is only for native Termux."
+[[ "$(uname -m)" == "aarch64" ]] || die "Architecture must be aarch64."
+[[ "$ASSET" != */* && "$ASSET" != "." && "$ASSET" != ".." ]] ||
+  die "Invalid release asset name: $ASSET"
+[[ -d "$INSTALL_DIR" && -w "$INSTALL_DIR" ]] ||
+  die "Install directory is not writable: $INSTALL_DIR"
+
+for command in curl tar sha256sum install cmp mv; do
+  command -v "$command" >/dev/null 2>&1 || die "$command is required."
+done
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  ok "Updater dry run passed"
+  info "Release URL: $URL"
+  info "Install directory: $INSTALL_DIR"
+  exit 0
+fi
+
+[[ "$CHECK_ONLY" -eq 0 || "$FORCE" -eq 0 ]] ||
+  die "--check and --force cannot be used together."
+
+TMP_ROOT="${TMPDIR:-$PREFIX/tmp}"
+mkdir -p "$TMP_ROOT"
+TEMP_DIR="$(mktemp -d "${TMP_ROOT%/}/claude-termux-update.XXXXXX")"
+ARCHIVE="$TEMP_DIR/$ASSET"
+CHECKSUM_FILE="$ARCHIVE.sha256"
+EXTRACT_DIR="$TEMP_DIR/extract"
+EFFECTIVE_URL=""
+RELEASE_LABEL="latest release"
+EXPECTED_CHECKSUM=""
+CHECKSUM_NAME=""
+ACTUAL_CHECKSUM=""
+mkdir -p "$EXTRACT_DIR"
+
+info "Downloading latest Claude Termux release"
+EFFECTIVE_URL="$(curl -fL --retry 3 --retry-delay 2 -w '%{url_effective}' -o "$ARCHIVE" "$URL")"
+
+info "Downloading release checksum"
+curl -fL --retry 3 --retry-delay 2 -o "$CHECKSUM_FILE" "$CHECKSUM_URL"
+
+info "Verifying release checksum"
+IFS=' ' read -r EXPECTED_CHECKSUM CHECKSUM_NAME _ <"$CHECKSUM_FILE" ||
+  die "Release checksum file is invalid."
+CHECKSUM_NAME="${CHECKSUM_NAME#\*}"
+[[ "$EXPECTED_CHECKSUM" =~ ^[a-fA-F0-9]{64}$ && "$CHECKSUM_NAME" == "$ASSET" ]] ||
+  die "Release checksum does not identify $ASSET."
+ACTUAL_CHECKSUM="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+[[ "${EXPECTED_CHECKSUM,,}" == "$ACTUAL_CHECKSUM" ]] ||
+  die "Release checksum verification failed."
+ok "Checksum verified"
+
+info "Extracting release artifact"
+tar -xzf "$ARCHIVE" -C "$EXTRACT_DIR" "${PACKAGE_FILES[@]}"
+for file in "${PACKAGE_FILES[@]}"; do
+  [[ -f "$EXTRACT_DIR/$file" && ! -L "$EXTRACT_DIR/$file" &&
+    -s "$EXTRACT_DIR/$file" && -x "$EXTRACT_DIR/$file" ]] ||
+    die "Artifact has invalid file: $file"
+done
+
+if [[ "$EFFECTIVE_URL" == */releases/download/*/* ]]; then
+  RELEASE_LABEL="${EFFECTIVE_URL#*/releases/download/}"
+  RELEASE_LABEL="${RELEASE_LABEL%%/*}"
+fi
+
+FILES_MATCH=1
+for file in "${PACKAGE_FILES[@]}"; do
+  if [[ ! -f "$INSTALL_DIR/$file" ]] ||
+    ! cmp -s "$EXTRACT_DIR/$file" "$INSTALL_DIR/$file"; then
+    FILES_MATCH=0
+    break
+  fi
+done
+
+if [[ "$FILES_MATCH" -eq 1 && "$FORCE" -eq 0 ]]; then
+  ok "Claude Termux already matches $RELEASE_LABEL"
+  exit 0
+fi
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+  warn "Update available: $RELEASE_LABEL"
+  exit 0
+fi
+
+info "Staging $RELEASE_LABEL"
+for file in "${PACKAGE_FILES[@]}"; do
+  install -m 0755 "$EXTRACT_DIR/$file" "$INSTALL_DIR/.$file.new.$$"
+done
+
+info "Installing $RELEASE_LABEL"
+COMMIT_STARTED=1
+for file in "${PACKAGE_FILES[@]}"; do
+  if [[ -e "$INSTALL_DIR/$file" ]]; then
+    mv -f "$INSTALL_DIR/$file" "$INSTALL_DIR/.$file.bak.$$"
+  fi
+  mv -f "$INSTALL_DIR/.$file.new.$$" "$INSTALL_DIR/$file"
+done
+
+if [[ "${CLAUDE_TERMUX_SKIP_VERIFY:-0}" != "1" ]]; then
+  info "Running updated launcher smoke test"
+  VERSION="$("$INSTALL_DIR/claude" --version)" || die "Updated launcher smoke test failed."
+  ok "Claude online: $VERSION"
+fi
+
+INSTALL_SUCCESS=1
+ok "Updated Claude Termux to $RELEASE_LABEL"
