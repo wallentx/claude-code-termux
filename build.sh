@@ -61,6 +61,7 @@ Environment:
   CLAUDE_TERMUX_BUILD_VERSION_OUTPUT
                              Write the resolved download version to this file
   CLAUDE_TERMUX_SKIP_SMOKE=1 Skip ./claude --version smoke test
+  CLAUDE_TERMUX_NO_AETHER=1  Use the traditional glibc loader even on Aether
 EOF
 }
 
@@ -255,7 +256,9 @@ fi
 if [[ "$CROSS_COMPILE" -eq 0 ]]; then
   GLIBC_LOADER="${PREFIX}/glibc/lib/ld-linux-aarch64.so.1"
   CA_BUNDLE="${PREFIX}/etc/tls/cert.pem"
-  [[ -x "$GLIBC_LOADER" ]] || die "Missing Termux glibc loader: $GLIBC_LOADER. Install glibc-repo and glibc."
+  if [[ "${CLAUDE_TERMUX_NO_AETHER:-0}" =~ ^(1|true|yes|on)$ || ! -x "$PREFIX/bin/aether-run" ]]; then
+    [[ -x "$GLIBC_LOADER" ]] || die "Missing Termux glibc loader: $GLIBC_LOADER. Install glibc-repo and glibc."
+  fi
   [[ -r "$CA_BUNDLE" ]] || die "Missing Termux CA bundle: $CA_BUNDLE. Install ca-certificates."
   if [[ ! -r "${PREFIX}/etc/resolv.conf" ]]; then
     info "Resolver config missing: ${PREFIX}/etc/resolv.conf. Launcher DNS proxy fallback will be used at runtime."

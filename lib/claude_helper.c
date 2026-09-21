@@ -74,7 +74,7 @@ static int run_fork_updater(const char *install_dir, int argc, char **argv) {
 static void print_upstream_updater_warning(void) {
     fprintf(stderr,
             "[claude-termux] Using the fork updater; the upstream updater remains disabled "
-            "because /proc/self/exe would point at the glibc loader.\n");
+            "to preserve the Termux launcher and payload layout.\n");
 }
 
 static const char *resolve_prefix(char *fallback, size_t fallback_len) {
@@ -590,14 +590,19 @@ static void warn_missing_resolver(const char *prefix) {
     }
 }
 
-static int configure_environment(const char *prefix) {
+static int configure_environment(const char *prefix, int use_aether) {
     char cert_path[PATH_MAX];
     char tmp_path[PATH_MAX];
     char browser_path[PATH_MAX];
     const char *tmpdir = getenv("TMPDIR");
 
-    unsetenv("LD_PRELOAD");
-    unsetenv("LD_LIBRARY_PATH");
+    /* aether-run is a Bionic entry point. Keep its Termux execution shim so
+       its shell wrapper and Android children can start on modern Android.
+       Aether itself replaces these variables before entering glibc. */
+    if (!use_aether) {
+        unsetenv("LD_PRELOAD");
+        unsetenv("LD_LIBRARY_PATH");
+    }
 
     if (!path_join(cert_path, sizeof(cert_path), prefix, "etc/tls/cert.pem")) {
         return 0;
@@ -647,6 +652,7 @@ int main(int argc, char **argv) {
     char exec_path[PATH_MAX];
     char exec_path_copy[PATH_MAX];
     char loader_path[PATH_MAX];
+    char aether_path[PATH_MAX];
     char lib_path[PATH_MAX];
     char payload_path[PATH_MAX];
     const char *prefix = NULL;
@@ -654,6 +660,7 @@ int main(int argc, char **argv) {
     char **new_argv = NULL;
     ssize_t read_len;
     int arg_idx = 0;
+    int use_aether;
 
     prefix = resolve_prefix(prefix_fallback, sizeof(prefix_fallback));
     if (!is_native_termux(prefix)) {
@@ -681,16 +688,21 @@ int main(int argc, char **argv) {
         return run_fork_updater(install_dir, argc, argv);
     }
 
-    if (!path_join(loader_path, sizeof(loader_path), prefix,
-                   "glibc/lib/ld-linux-aarch64.so.1")) {
-        return 1;
-    }
-    if (!path_join(lib_path, sizeof(lib_path), prefix, "glibc/lib")) {
-        return 1;
-    }
-    if (!require_file("Termux glibc loader", loader_path, X_OK)) {
-        fprintf(stderr, "[claude-termux] Install it with: pkg install glibc-repo glibc\n");
-        return 1;
+    use_aether = !env_is_truthy("CLAUDE_TERMUX_NO_AETHER") &&
+                 path_join(aether_path, sizeof(aether_path), prefix, "bin/aether-run") &&
+                 access(aether_path, X_OK) == 0;
+    if (!use_aether) {
+        if (!path_join(loader_path, sizeof(loader_path), prefix,
+                       "glibc/lib/ld-linux-aarch64.so.1")) {
+            return 1;
+        }
+        if (!path_join(lib_path, sizeof(lib_path), prefix, "glibc/lib")) {
+            return 1;
+        }
+        if (!require_file("Termux glibc loader", loader_path, X_OK)) {
+            fprintf(stderr, "[claude-termux] Install it with: pkg install glibc-repo glibc\n");
+            return 1;
+        }
     }
 
     if (!path_join(payload_path, sizeof(payload_path), install_dir, CLAUDE_PAYLOAD_NAME)) {
@@ -700,7 +712,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (!configure_environment(prefix)) {
+    if (!configure_environment(prefix, use_aether)) {
         return 1;
     }
 
@@ -710,16 +722,21 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    new_argv[arg_idx++] = loader_path;
-    new_argv[arg_idx++] = "--library-path";
-    new_argv[arg_idx++] = lib_path;
+    if (use_aether) {
+        new_argv[arg_idx++] = aether_path;
+        new_argv[arg_idx++] = "--";
+    } else {
+        new_argv[arg_idx++] = loader_path;
+        new_argv[arg_idx++] = "--library-path";
+        new_argv[arg_idx++] = lib_path;
+    }
     new_argv[arg_idx++] = payload_path;
     for (int i = 1; i < argc; i++) {
         new_argv[arg_idx++] = argv[i];
     }
     new_argv[arg_idx] = NULL;
 
-    execv(loader_path, new_argv);
+    execv(new_argv[0], new_argv);
     perror("[claude-termux] execv failed");
     free(new_argv);
     return 1;

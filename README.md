@@ -30,7 +30,7 @@ Requirements:
 
 - native Termux on Android
 - `aarch64`
-- `glibc-repo` and `glibc`
+- `glibc-repo` and `glibc`, or Termux Aether's bundled `aether-run` runtime
 - `ca-certificates`
 
 For non-Termux platforms, use the official Claude Code installer:
@@ -75,8 +75,8 @@ claude-termux-update # fork-owned transactional updater
 The launcher exists because the upstream payload is a glibc Linux ELF, while Termux is an Android/Bionic environment. The launcher accounts for these boundaries:
 
 - **Native Termux gate**: validates `$PREFIX`, `$TERMUX_VERSION`, and the Termux-style prefix before launching.
-- **glibc loader path**: executes `$PREFIX/glibc/lib/ld-linux-aarch64.so.1 --library-path $PREFIX/glibc/lib ./claude.glibc`.
-- **Bionic preload cleanup**: clears `LD_PRELOAD` and `LD_LIBRARY_PATH` so Termux/Bionic shims are not handed to the glibc loader.
+- **Runtime selection**: when `$PREFIX/bin/aether-run` is executable, launches `aether-run -- ./claude.glibc` through that absolute path. Aether uses its APK-installed loader, avoiding Android's `Could not find a PHDR` failure when the package-managed glibc loader is routed through Bionic. Otherwise, keeps the traditional `$PREFIX/glibc/lib/ld-linux-aarch64.so.1 --library-path $PREFIX/glibc/lib ./claude.glibc` path.
+- **Bionic preload cleanup**: on the traditional path, clears `LD_PRELOAD` and `LD_LIBRARY_PATH` so Termux/Bionic shims are not handed to the glibc loader. On Aether, preserves them for its Bionic wrapper; Aether handles the transition to glibc and back for child processes.
 - **CA bundle path**: sets `SSL_CERT_FILE=$PREFIX/etc/tls/cert.pem`.
 - **Resolver bridge**: starts a native Bionic localhost CONNECT proxy, sets `HTTPS_PROXY`/`HTTP_PROXY` to that proxy, and sets `CLAUDE_CODE_PROXY_RESOLVES_HOSTS=true` so Claude network paths can let the proxy resolve upstream hostnames through Termux/Android DNS instead of reading `/etc/resolv.conf`.
 - **Resolver hints**: keeps IPv4-first hints with `RES_OPTIONS`, `NODE_OPTIONS`, and `BUN_CONFIG_DNS_RESULT_ORDER` for code paths that still use embedded resolver settings. Set `CLAUDE_TERMUX_ALLOW_IPV6=1` to disable the IPv4 bias.
@@ -85,6 +85,8 @@ The launcher exists because the upstream payload is a glibc Linux ELF, while Ter
 - **Fork-owned updater**: intercepts `claude update`, `claude upgrade`, and `claude install` before the glibc payload runs. It downloads this fork's latest release artifact, requires a valid SHA-256 checksum, stages replacements beside the installed files, and rolls back if installation or the updated launcher smoke test fails. It replaces only `claude`, `claude.glibc`, and `claude-termux-update`; the glibc loader is never modified.
 
 Use `claude update --check` to compare installed files with the latest release without changing them. Use `claude update --dry-run` to check local prerequisites without downloading.
+
+Runtime detection uses the installed Aether entry point, not a Termux version string or a command found on `PATH`. Set `CLAUDE_TERMUX_NO_AETHER=1` to force the traditional loader for troubleshooting (also honored by the installer and build prerequisite checks). If an installed Aether runtime fails, the launcher reports that failure instead of retrying Claude through another runtime. Update interception, proxy/DNS settings, certificates, browser handoff, and argument forwarding apply to both paths. Optional Linux dependencies may still require packages under `$PREFIX/glibc`.
 
 If you already run a proxy, set `CLAUDE_TERMUX_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`, or `ALL_PROXY` before launching `claude`; the launcher will preserve it and still set `CLAUDE_CODE_PROXY_RESOLVES_HOSTS=true` when unset. To disable the embedded proxy fallback, set `CLAUDE_TERMUX_NO_DNS_PROXY=1`.
 

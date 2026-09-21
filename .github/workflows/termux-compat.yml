@@ -41,11 +41,13 @@ jobs:
       - name: Install shell tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y shellcheck
+          sudo apt-get install -y shellcheck build-essential
       - name: Shell syntax
         run: bash -n build.sh install.sh .github/scripts/compat-test.sh .github/scripts/release-check.sh .github/scripts/package-release.sh
       - name: ShellCheck
         run: shellcheck build.sh install.sh .github/scripts/compat-test.sh .github/scripts/release-check.sh .github/scripts/package-release.sh
+      - name: Launcher runtime selection fixtures
+        run: python3 .github/scripts/launcher-test.py
       - name: Upstream release metadata
         run: .github/scripts/release-check.sh --json
 

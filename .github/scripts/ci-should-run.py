@@ -11,6 +11,7 @@ import sys
 ARTIFACT_PATHS = {
     ".github/scripts/ci-should-run.py",
     ".github/scripts/compat-test.sh",
+    ".github/scripts/launcher-test.py",
     ".github/scripts/package-release.sh",
     ".github/workflows/package-release.yml",
     ".github/workflows/termux-compat.yml",
